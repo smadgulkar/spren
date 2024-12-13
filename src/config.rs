@@ -74,7 +74,7 @@ impl Config {
                 provider: AIProvider::Anthropic,
                 anthropic_api_key: Some("your-anthropic-api-key-here".to_string()),
                 openai_api_key: Some("your-openai-api-key-here".to_string()),
-                model: "claude-3-haiku-20240307".to_string(),
+                model: "".to_string(),
                 max_tokens: 150,
                 temperature: 0.7,
             },
