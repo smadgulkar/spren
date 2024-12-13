@@ -5,21 +5,28 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write # Add this to ensure proper permissions
+
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v3
+
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --draft=false \
+            --prerelease=false \
+            --title="Release ${{ github.ref_name }}" \
+            --generate-notes
+          echo "upload_url=$(gh release view ${{ github.ref_name }} --json uploadUrl -q .uploadUrl)" >> $GITHUB_OUTPUT
 
   build-and-release:
     needs: create-release
@@ -78,11 +85,7 @@ jobs:
           Compress-Archive -Path release/* -DestinationPath ${{ matrix.asset_name }}
 
       - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.asset_name }}
-          asset_name: ${{ matrix.asset_name }}
-          asset_content_type: application/octet-stream
+        run: |
+          gh release upload ${{ github.ref_name }} ${{ matrix.asset_name }}
