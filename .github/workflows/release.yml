@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write # Add this to ensure proper permissions
+  contents: write
 
 jobs:
   create-release:
@@ -16,16 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Create Release
+      - name: Create or Get Release
         id: create_release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create ${{ github.ref_name }} \
-            --draft=false \
-            --prerelease=false \
-            --title="Release ${{ github.ref_name }}" \
-            --generate-notes
+          # Check if release exists
+          if ! gh release view ${{ github.ref_name }} &>/dev/null; then
+            echo "Creating new release..."
+            gh release create ${{ github.ref_name }} \
+              --draft=false \
+              --prerelease=false \
+              --title="Release ${{ github.ref_name }}" \
+              --generate-notes
+          else
+            echo "Release already exists, using existing release..."
+          fi
           echo "upload_url=$(gh release view ${{ github.ref_name }} --json uploadUrl -q .uploadUrl)" >> $GITHUB_OUTPUT
 
   build-and-release:
@@ -88,4 +94,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Delete existing asset if it exists to allow re-upload
+          gh release delete-asset ${{ github.ref_name }} ${{ matrix.asset_name }} --yes || true
           gh release upload ${{ github.ref_name }} ${{ matrix.asset_name }}
