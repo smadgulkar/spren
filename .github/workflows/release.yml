@@ -81,14 +81,14 @@ jobs:
           cd release
           tar czf ../${{ matrix.asset_name }} .
           cd ..
-
       - name: Prepare release archive (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           mkdir release
-          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} release/
-          cp README.md LICENSE release/
-          Compress-Archive -Path release/* -DestinationPath ${{ matrix.asset_name }}
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.artifact_name }}" -Destination "release\"
+          if (Test-Path "README.md") { Copy-Item "README.md" -Destination "release\" }
+          if (Test-Path "LICENSE") { Copy-Item "LICENSE" -Destination "release\" }
+          Compress-Archive -Path "release\*" -DestinationPath "${{ matrix.asset_name }}"
 
       - name: Upload Release Asset
         env:
