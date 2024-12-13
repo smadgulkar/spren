@@ -1,0 +1,19 @@
+[package]
+name = "spren"
+version = "0.1.1"
+edition = "2021"
+description = "An AI-powered shell assistant that helps with command-line operations"
+authors = ["Your Name <your.email@example.com>"]
+
+[dependencies]
+tokio = { version = "1.28", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+clap = { version = "4.3", features = ["derive"] }
+colored = "2.0"
+dotenv = "0.15"
+toml = "0.8.19"
+dirs = "5.0.1"
+tempfile = "3.14.0"
