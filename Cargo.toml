@@ -4,6 +4,12 @@ version = "0.1.1"
 edition = "2021"
 description = "An AI-powered shell assistant that helps with command-line operations"
 authors = ["Your Name <your.email@example.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/smadgulkar/spren"
+repository = "https://github.com/smadgulkar/spren"
+keywords = ["cli", "ai", "assistant", "shell", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 tokio = { version = "1.28", features = ["full"] }
@@ -16,4 +22,14 @@ colored = "2.0"
 dotenv = "0.15"
 toml = "0.8.19"
 dirs = "5.0.1"
-tempfile = "3.14.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true  # Automatically strip symbols from the binary
+panic = "abort"  # Remove panic unwinding code
+
+[[bin]]
+name = "spren"
+path = "src/main.rs"
