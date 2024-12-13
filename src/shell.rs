@@ -28,7 +28,7 @@ impl ShellType {
     pub fn get_shell_command(&self) -> (&str, &[&str]) {
         match self {
             ShellType::Bash => ("sh", &["-c"]),
-            ShellType::PowerShell => ("powershell", &["-NoProfile", "-Command"]),
+            ShellType::PowerShell => ("powershell", &["-NoProfile", "-NonInteractive", "-Command"]),
             ShellType::Cmd => ("cmd", &["/C"]),
         }
     }
@@ -45,8 +45,8 @@ impl ShellType {
         match self {
             ShellType::Bash => command.to_string(),
             ShellType::PowerShell => {
-                // Escape single quotes and wrap in single quotes for PowerShell
-                format!("'{}'", command.replace('\'', "''"))
+                // PowerShell commands don't need single quote wrapping when using -Command
+                command.to_string()
             },
             ShellType::Cmd => {
                 // Escape special characters for CMD
