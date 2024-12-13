@@ -5,58 +5,84 @@ on:
     tags:
       - 'v*'
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+
   build-and-release:
-    name: Build and Release
+    needs: create-release
+    name: Build and Release ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            artifact_name: spren
+            asset_name: spren-linux-amd64.tar.gz
             target: x86_64-unknown-linux-gnu
-            artifact_name: spren
-            asset_name: spren-linux-amd64
           - os: windows-latest
-            target: x86_64-pc-windows-msvc
             artifact_name: spren.exe
-            asset_name: spren-windows-amd64.exe
+            asset_name: spren-windows-amd64.zip
+            target: x86_64-pc-windows-msvc
           - os: macos-latest
-            target: x86_64-apple-darwin
             artifact_name: spren
-            asset_name: spren-macos-amd64
+            asset_name: spren-macos-amd64.tar.gz
+            target: x86_64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
 
       - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Create archive
-        shell: bash
+      - name: Prepare release archive (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            7z a -tzip "spren-${{ matrix.target }}.zip" "./target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "./README.md" "./LICENSE"
-          else
-            tar -czf "spren-${{ matrix.target }}.tar.gz" -C "./target/${{ matrix.target }}/release" "${{ matrix.artifact_name }}" -C ../../../ "README.md" "LICENSE"
-          fi
+          mkdir release
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} release/
+          cp README.md LICENSE release/
+          cd release
+          tar czf ../${{ matrix.asset_name }} .
+          cd ..
+
+      - name: Prepare release archive (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir release
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} release/
+          cp README.md LICENSE release/
+          Compress-Archive -Path release/* -DestinationPath ${{ matrix.asset_name }}
 
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            spren-${{ matrix.target }}.*
+        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./${{ matrix.asset_name }}
+          asset_name: ${{ matrix.asset_name }}
+          asset_content_type: application/octet-stream
