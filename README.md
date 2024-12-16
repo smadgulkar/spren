@@ -26,8 +26,6 @@ Spren is an intelligent command-line assistant powered by AI that translates nat
 - 🧠 Intelligent error analysis and command suggestions
 - ⚡ Multi-shell support (Bash, PowerShell, CMD)
 
-[Rest of your content remains the same...]
-
 ## Examples
 
 Here are some ways to use Spren with natural language:
