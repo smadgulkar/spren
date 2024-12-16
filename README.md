@@ -26,6 +26,41 @@ Spren is an intelligent command-line assistant powered by AI that translates nat
 - 🧠 Intelligent error analysis and command suggestions
 - ⚡ Multi-shell support (Bash, PowerShell, CMD)
 
+## Installation
+### Linux and macOS
+1. Download the latest release for your platform:
+   ```bash
+   # Linux
+   curl -LO https://github.com/smadgulkar/spren/releases/latest/download/spren-linux-amd64.tar.gz
+   # macOS
+   curl -LO https://github.com/smadgulkar/spren/releases/latest/download/spren-macos-amd64.tar.gz
+   ```
+2. Extract and make executable:
+   ```bash
+   tar xzf spren-*-amd64.tar.gz
+   chmod +x spren
+   ```
+3. (Optional) Move to a directory in your PATH:
+   ```bash
+   sudo mv spren /usr/local/bin/
+   ```
+### Windows
+1. Download `spren-windows-amd64.zip` from the [latest release](https://github.com/smadgulkar/spren/releases/latest)
+2. Extract the ZIP file
+3. Run `spren.exe` from any terminal
+## Configuration
+1. Run Spren once to create the default config:
+   ```bash
+   spren
+   ```
+2. Edit your config file:
+   ```bash
+   # Linux/macOS
+   vim ~/.config/spren/config.toml
+   # Windows (PowerShell)
+   notepad $env:USERPROFILE\.config\spren\config.toml
+   ```
+
 ## Examples
 
 Here are some ways to use Spren with natural language:
