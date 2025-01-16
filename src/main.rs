@@ -2,11 +2,15 @@ use anyhow::Result;
 use colored::*;
 use std::io::{self, Write};
 use std::time::Instant;
+use crate::executor::chain::{ChainExecutor, ChainStatus};
 
 mod ai;
 mod config;
 mod executor;
 mod shell;
+mod intent;
+
+use intent::{Intent, IntentAnalyzer};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -48,71 +52,124 @@ async fn main() -> Result<()> {
 }
 
 async fn process_query(query: &str, config: &config::Config) -> Result<()> {
-    // Get command suggestion from AI
-    let (command, is_dangerous) = ai::get_command_suggestion(query, &config).await?;
+    // Get command chain from AI
+    let intent = IntentAnalyzer::analyze(query).await?;
 
-    println!("\n{}", "Suggested command:".blue().bold());
-    if is_dangerous {
-        println!("{} {}", command, "[DANGEROUS]".red().bold());
-        println!("\n{}", "This command has been identified as potentially dangerous.".yellow());
-        if !config.security.require_confirmation {
-            return Ok(());
-        }
-    } else {
-        println!("{}", command);
-    }
+    match intent {
+        Intent::CommandChain => {
+            let chain = ai::get_command_chain(query, &config).await?;
+            let mut executor = ChainExecutor::new(chain);
 
-    if config.security.require_confirmation {
-        print!("\nExecute? [y/N] ");
-        io::stdout().flush()?;
+            // Show preview
+            println!("\n{}", "Command Chain Preview:".blue().bold());
+            println!("{}", executor.preview());
 
-        let mut response = String::new();
-        io::stdin().read_line(&mut response)?;
+            if config.security.require_confirmation {
+                print!("\nExecute this command chain? [y/N/s(step-by-step)] ");
+                io::stdout().flush()?;
 
-        if response.trim().to_lowercase() != "y" {
-            return Ok(());
-        }
-    }
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+                let response = response.trim().to_lowercase();
 
-    let start_time = Instant::now();
-    match executor::execute_command(&command).await {
-        Ok(output) => {
-            if config.display.show_execution_time {
-                println!("\nExecution time: {:?}", start_time.elapsed());
-            }
-
-            if !output.stdout.is_empty() {
-                println!("\n{}", output.stdout);
-            }
-
-            if !output.stderr.is_empty() {
-                if output.success {
-                    // Command succeeded but had stderr output
-                    println!("{}: {}", "Note".yellow().bold(), output.stderr);
-                } else {
-                    // Command failed
-                    println!("{}: {}", "Error".red().bold(), output.stderr);
-
-                    // Get error analysis and suggestion
-                    if let Ok(suggestion) = ai::get_error_suggestion(
-                        &command,
-                        &output.stdout,
-                        &output.stderr,
-                        &config
-                    ).await {
-                        println!("\n{}", "Suggestion:".yellow().bold());
-                        println!("{}", suggestion);
+                match response.as_str() {
+                    "y" => {
+                        // Execute all steps
+                        let start_time = Instant::now();
+                        match executor.execute_all().await {
+                            Ok(outputs) => {
+                                println!("\n{}", "✓ Command chain completed successfully".green());
+                                if config.display.show_execution_time {
+                                    println!("Total execution time: {:?}", start_time.elapsed());
+                                }
+                                for output in outputs {
+                                    if !output.stdout.is_empty() {
+                                        println!("{}", output.stdout);
+                                    }
+                                    if !output.stderr.is_empty() {
+                                        println!("{}: {}", "Note".yellow().bold(), output.stderr);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("\n{}: {}", "Chain execution failed".red().bold(), e);
+                                println!("\nWould you like to rollback the changes? [y/N] ");
+                                io::stdout().flush()?;
+                                
+                                let mut rollback = String::new();
+                                io::stdin().read_line(&mut rollback)?;
+                                if rollback.trim().to_lowercase() == "y" {
+                                    match executor.rollback().await {
+                                        Ok(_) => println!("✓ Successfully rolled back changes"),
+                                        Err(e) => println!("Failed to rollback: {}", e),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "s" => {
+                        // Step by step execution
+                        while !executor.is_complete() {
+                            if let Some(step) = executor.current_step_details() {
+                                let (current, total) = executor.progress();
+                                println!("\n{} ({}/{})", "Current step:".blue().bold(), current + 1, total);
+                                println!("Command: {}", step.command);
+                                println!("Explanation: {}", step.explanation);
+                                
+                                print!("\nExecute this step? [y/n/s(skip)] ");
+                                io::stdout().flush()?;
+                                
+                                let mut step_response = String::new();
+                                io::stdin().read_line(&mut step_response)?;
+                                
+                                match step_response.trim().to_lowercase().as_str() {
+                                    "y" => {
+                                        match executor.execute_next().await {
+                                            Ok(Some(output)) => {
+                                                if !output.stdout.is_empty() {
+                                                    println!("{}", output.stdout);
+                                                }
+                                                if !output.stderr.is_empty() {
+                                                    println!("{}: {}", "Note".yellow().bold(), output.stderr);
+                                                }
+                                            }
+                                            Ok(None) => break,
+                                            Err(e) => {
+                                                println!("\n{}: {}", "Step failed".red().bold(), e);
+                                                return Ok(());
+                                            }
+                                        }
+                                    }
+                                    "s" => {
+                                        executor.skip_step()?;
+                                    }
+                                    _ => {
+                                        println!("Chain execution cancelled");
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                        println!("\n{}", "✓ Command chain completed".green());
+                    }
+                    _ => {
+                        println!("Chain execution cancelled");
+                        return Ok(());
                     }
                 }
             }
         }
-        Err(e) => {
-            println!("\n{}: {}", "System Error".red().bold(), e);
+        Intent::CodeGeneration | Intent::GitOperation => {
+            println!("{}", "This feature is coming soon!".yellow().bold());
+        }
+        Intent::Unknown => {
+            println!("{}", "Could not determine the intent of your query.".red().bold());
         }
     }
 
     Ok(())
 }
+
 #[derive(Debug, serde::Deserialize)]
 struct GithubRelease {
     tag_name: String,
