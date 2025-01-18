@@ -394,7 +394,6 @@ async fn try_openai_request(query: &str, config: &Config) -> Result<CommandChain
 
 fn format_prompt(query: &str, shell_name: &str) -> String {
     let python_template = if shell_name == "CMD" {
-        // Special handling for CMD to make Python scripts more robust
         "When creating Python scripts:\n\
          1. Use a try-except block around input() calls\n\
          2. Add a pause at the end using input('Press Enter to exit...')\n\
@@ -414,7 +413,25 @@ fn format_prompt(query: &str, shell_name: &str) -> String {
          5. A rollback command if applicable\n\
          \n\
          Respond in this JSON format with version:\n\
-         ...",  // rest of the format string remains the same
+         {{\n\
+           \"version\": \"1.0\",\n\
+           \"steps\": [\n\
+             {{\n\
+               \"command\": \"command string\",\n\
+               \"explanation\": \"what this step does\",\n\
+               \"is_dangerous\": false,\n\
+               \"estimated_impact\": {{\n\
+                 \"cpu_percentage\": 0.1,\n\
+                 \"memory_mb\": 1.0,\n\
+                 \"disk_mb\": 0.0,\n\
+                 \"network_mb\": 0.0,\n\
+                 \"duration_seconds\": 0.1\n\
+               }},\n\
+               \"rollback_command\": \"command to undo this step (or null)\"\n\
+             }}\n\
+           ],\n\
+           \"explanation\": \"overall explanation of the approach\"\n\
+         }}",
         python_template, shell_name, query
     )
 } 
