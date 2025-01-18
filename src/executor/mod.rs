@@ -10,7 +10,6 @@ pub struct CommandOutput {
 }
 
 pub async fn execute_command(command: &str) -> Result<CommandOutput> {
-    // Move the existing execute_command function from executor.rs here
     let shell_type = crate::shell::ShellType::detect();
     let (shell, args) = shell_type.get_shell_command();
 

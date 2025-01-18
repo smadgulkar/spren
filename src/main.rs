@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use colored::*;
 use std::io::{self, Write};
-use std::time::Instant;
-use crate::executor::chain::{ChainExecutor, ChainStatus};
+use std::time::{Duration, Instant};
+use crate::executor::chain::ChainExecutor;
+use crate::ai::AIError;
 
 mod ai;
 mod config;
@@ -52,12 +53,29 @@ async fn main() -> Result<()> {
 }
 
 async fn process_query(query: &str, config: &config::Config) -> Result<()> {
-    // Get command chain from AI
     let intent = IntentAnalyzer::analyze(query).await?;
 
     match intent {
         Intent::CommandChain => {
-            let chain = ai::get_command_chain(query, &config).await?;
+            let chain = match ai::get_command_chain(query, &config).await {
+                Ok(chain) => chain,
+                Err(e) => {
+                    match e {
+                        AIError::RateLimitError(msg) => {
+                            println!("{}: {}. Retrying...", "Rate limit".yellow().bold(), msg);
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                            ai::get_command_chain(query, &config).await.map_err(|e| anyhow!(e.to_string()))?
+                        }
+                        AIError::NetworkError(msg) => {
+                            println!("{}: {}. Retrying...", "Network error".yellow().bold(), msg);
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            ai::get_command_chain(query, &config).await.map_err(|e| anyhow!(e.to_string()))?
+                        }
+                        _ => return Err(anyhow!(e.to_string()))
+                    }
+                }
+            };
+
             let mut executor = ChainExecutor::new(chain);
 
             // Show preview

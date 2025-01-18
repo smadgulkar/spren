@@ -1,57 +1,85 @@
 // src/shell.rs
 use std::env;
+use which::which;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ShellType {
-    Bash,
-    PowerShell,
+    Powershell,
     Cmd,
+    Bash,
+    Other(String),
 }
 
 impl ShellType {
     pub fn detect() -> Self {
-        if cfg!(windows) {
-            // Check if running in PowerShell
-            if let Ok(shell_name) = env::var("PSModulePath") {
-                if !shell_name.is_empty() {
-                    return ShellType::PowerShell;
-                }
+        // First check if we're explicitly in CMD
+        if let Ok(comspec) = env::var("ComSpec") {
+            if comspec.to_lowercase().contains("cmd.exe") {
+                return ShellType::Cmd;
             }
-            // Default to CMD on Windows if not PowerShell
-            ShellType::Cmd
-        } else {
-            // Default to Bash on Unix-like systems
-            ShellType::Bash
+        }
+
+        // Check parent process name
+        if let Ok(parent) = env::var("SHELL") {
+            let parent = parent.to_lowercase();
+            if parent.contains("bash") || parent.contains("zsh") {
+                return ShellType::Bash;
+            }
+        }
+
+        // On Windows, check if powershell is available
+        #[cfg(windows)]
+        {
+            if let Ok(parent) = env::var("PSModulePath") {
+                return ShellType::Powershell;
+            }
+            // Additional Windows-specific check
+            if which("powershell.exe").is_ok() {
+                return ShellType::Powershell;
+            }
+        }
+
+        // Default to CMD on Windows if nothing else matches
+        #[cfg(windows)]
+        {
+            if which("cmd.exe").is_ok() {
+                return ShellType::Cmd;
+            }
+        }
+
+        ShellType::Other("unknown".to_string())
+    }
+
+    pub fn get_shell_name(&self) -> &str {
+        match self {
+            ShellType::Powershell => "PowerShell",
+            ShellType::Cmd => "CMD",
+            ShellType::Bash => "Bash",
+            ShellType::Other(name) => name,
         }
     }
 
     pub fn get_shell_command(&self) -> (&str, &[&str]) {
         match self {
             ShellType::Bash => ("sh", &["-c"]),
-            ShellType::PowerShell => ("powershell", &["-NoProfile", "-NonInteractive", "-Command"]),
+            ShellType::Powershell => ("powershell", &["-NoProfile", "-NonInteractive", "-Command"]),
             ShellType::Cmd => ("cmd", &["/C"]),
-        }
-    }
-
-    pub fn get_shell_name(&self) -> &str {
-        match self {
-            ShellType::Bash => "Bash",
-            ShellType::PowerShell => "PowerShell",
-            ShellType::Cmd => "Command Prompt",
+            ShellType::Other(_) => ("sh", &["-c"]), // Default to sh for unknown shells
         }
     }
 
     pub fn format_command(&self, command: &str) -> String {
         match self {
             ShellType::Bash => command.to_string(),
-            ShellType::PowerShell => {
+            ShellType::Powershell => {
                 // PowerShell commands don't need single quote wrapping when using -Command
                 command.to_string()
             },
             ShellType::Cmd => {
                 // Escape special characters for CMD
                 command.replace("\"", "\\\"")
-            }
+            },
+            ShellType::Other(_) => command.to_string(), // Default to no formatting for unknown shells
         }
     }
 }
