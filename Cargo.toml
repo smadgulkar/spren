@@ -27,14 +27,28 @@ validator = { version = "0.16", features = ["derive"] }
 schemars = "0.8"
 mockito = "1.2"
 which = "4.4"
+criterion = { version = "0.5", features = ["async_tokio"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+walkdir = "2.4"
+glob = "0.3"
+tokei = "12.1"
+serde_yaml = "0.9"
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-strip = true  # Automatically strip symbols from the binary
-panic = "abort"  # Remove panic unwinding code
+strip = true      # Automatically strip symbols from the binary
+panic = "abort"   # Remove panic unwinding code
 
 [[bin]]
 name = "spren"
 path = "src/main.rs"
+
+[dev-dependencies]
+tokio-test = "0.4"
+test-log = "0.2"
+tempfile = "3.8"

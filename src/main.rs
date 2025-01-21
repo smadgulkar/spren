@@ -1,51 +1,95 @@
-use anyhow::{Result, anyhow};
+use crate::ai::AIError;
+use crate::analysis::{ProjectAnalysis, ProjectAnalyzer};
+use crate::executor::chain::ChainExecutor;
+use anyhow::{anyhow, Result};
+use clap::{Parser, Subcommand};
 use colored::*;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
-use crate::executor::chain::ChainExecutor;
-use crate::ai::AIError;
 
 mod ai;
+mod analysis;
 mod config;
 mod executor;
-mod shell;
 mod intent;
+mod shell;
 
 use intent::{Intent, IntentAnalyzer};
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Analyze a project directory
+    Analyze {
+        /// Path to project directory
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    // ... existing commands ...
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load or create config
-    let config_path = config::get_config_path()?;
-    if !config_path.exists() {
-        config::Config::create_default(&config_path)?;
-        println!("Created default config file at {:?}", config_path);
-        println!("Please update the API key in the config file and restart.");
-        return Ok(());
-    }
+    let cli = Cli::parse();
 
-    let config = config::Config::load(&config_path)?;
-    let shell_type = shell::ShellType::detect();
+    match &cli.command {
+        Some(Commands::Analyze { path }) => {
+            println!("Analyzing project at: {}", path);
+            let analyzer = ProjectAnalyzer::new(path);
+            let config = config::Config::load(&config::get_config_path()?)?;
+            let analysis = analyzer.analyze_with_llm(&config).await?;
 
-    println!("{}", "Spren - Your AI Shell Assistant".green().bold());
-    println!("Shell Type: {}", format!("{:?}", shell_type).blue());
-    println!("Type 'exit' to quit\n");
-
-    loop {
-        print!("spren> ");
-        io::stdout().flush()?;
-
-        let mut query = String::new();
-        io::stdin().read_line(&mut query)?;
-        let query = query.trim();
-
-        if query == "exit" {
-            break;
+            print_analysis_results(&analysis);
         }
+        None => {
+            // Interactive mode
+            let config_path = config::get_config_path()?;
+            if !config_path.exists() {
+                config::Config::create_default(&config_path)?;
+                println!("Created default config file at {:?}", config_path);
+                println!("Please update the API key in the config file and restart.");
+                return Ok(());
+            }
 
-        match process_query(query, &config).await {
-            Ok(_) => continue,
-            Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
+            let config = config::Config::load(&config_path)?;
+            let shell_type = shell::ShellType::detect();
+
+            println!("{}", "Spren - Your AI Shell Assistant".green().bold());
+            println!("Shell Type: {}", format!("{:?}", shell_type).blue());
+            println!("Type 'exit' to quit\n");
+
+            loop {
+                print!("spren> ");
+                io::stdout().flush()?;
+
+                let mut query = String::new();
+                io::stdin().read_line(&mut query)?;
+                let query = query.trim();
+
+                if query == "exit" {
+                    break;
+                }
+
+                // Check if it's an analyze command
+                if query.starts_with("analyze ") {
+                    let path = query.trim_start_matches("analyze ").trim();
+                    let analyzer = ProjectAnalyzer::new(path);
+                    let analysis = analyzer.analyze_with_llm(&config).await?;
+                    print_analysis_results(&analysis);
+                    continue;
+                }
+
+                match process_query(query, &config).await {
+                    Ok(_) => continue,
+                    Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
+                }
+            }
         }
     }
 
@@ -59,21 +103,23 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
         Intent::CommandChain => {
             let chain = match ai::get_command_chain(query, &config).await {
                 Ok(chain) => chain,
-                Err(e) => {
-                    match e {
-                        AIError::RateLimitError(msg) => {
-                            println!("{}: {}. Retrying...", "Rate limit".yellow().bold(), msg);
-                            tokio::time::sleep(Duration::from_secs(2)).await;
-                            ai::get_command_chain(query, &config).await.map_err(|e| anyhow!(e.to_string()))?
-                        }
-                        AIError::NetworkError(msg) => {
-                            println!("{}: {}. Retrying...", "Network error".yellow().bold(), msg);
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            ai::get_command_chain(query, &config).await.map_err(|e| anyhow!(e.to_string()))?
-                        }
-                        _ => return Err(anyhow!(e.to_string()))
+                Err(e) => match e {
+                    AIError::RateLimitError(msg) => {
+                        println!("{}: {}. Retrying...", "Rate limit".yellow().bold(), msg);
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        ai::get_command_chain(query, &config)
+                            .await
+                            .map_err(|e| anyhow!(e.to_string()))?
                     }
-                }
+                    AIError::NetworkError(msg) => {
+                        println!("{}: {}. Retrying...", "Network error".yellow().bold(), msg);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        ai::get_command_chain(query, &config)
+                            .await
+                            .map_err(|e| anyhow!(e.to_string()))?
+                    }
+                    _ => return Err(anyhow!(e.to_string())),
+                },
             };
 
             let mut executor = ChainExecutor::new(chain);
@@ -113,7 +159,7 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                                 println!("\n{}: {}", "Chain execution failed".red().bold(), e);
                                 println!("\nWould you like to rollback the changes? [y/N] ");
                                 io::stdout().flush()?;
-                                
+
                                 let mut rollback = String::new();
                                 io::stdin().read_line(&mut rollback)?;
                                 if rollback.trim().to_lowercase() == "y" {
@@ -130,34 +176,41 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                         while !executor.is_complete() {
                             if let Some(step) = executor.current_step_details() {
                                 let (current, total) = executor.progress();
-                                println!("\n{} ({}/{})", "Current step:".blue().bold(), current + 1, total);
+                                println!(
+                                    "\n{} ({}/{})",
+                                    "Current step:".blue().bold(),
+                                    current + 1,
+                                    total
+                                );
                                 println!("Command: {}", step.command);
                                 println!("Explanation: {}", step.explanation);
-                                
+
                                 print!("\nExecute this step? [y/n/s(skip)] ");
                                 io::stdout().flush()?;
-                                
+
                                 let mut step_response = String::new();
                                 io::stdin().read_line(&mut step_response)?;
-                                
+
                                 match step_response.trim().to_lowercase().as_str() {
-                                    "y" => {
-                                        match executor.execute_next().await {
-                                            Ok(Some(output)) => {
-                                                if !output.stdout.is_empty() {
-                                                    println!("{}", output.stdout);
-                                                }
-                                                if !output.stderr.is_empty() {
-                                                    println!("{}: {}", "Note".yellow().bold(), output.stderr);
-                                                }
+                                    "y" => match executor.execute_next().await {
+                                        Ok(Some(output)) => {
+                                            if !output.stdout.is_empty() {
+                                                println!("{}", output.stdout);
                                             }
-                                            Ok(None) => break,
-                                            Err(e) => {
-                                                println!("\n{}: {}", "Step failed".red().bold(), e);
-                                                return Ok(());
+                                            if !output.stderr.is_empty() {
+                                                println!(
+                                                    "{}: {}",
+                                                    "Note".yellow().bold(),
+                                                    output.stderr
+                                                );
                                             }
                                         }
-                                    }
+                                        Ok(None) => break,
+                                        Err(e) => {
+                                            println!("\n{}: {}", "Step failed".red().bold(), e);
+                                            return Ok(());
+                                        }
+                                    },
                                     "s" => {
                                         executor.skip_step()?;
                                     }
@@ -181,11 +234,69 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
             println!("{}", "This feature is coming soon!".yellow().bold());
         }
         Intent::Unknown => {
-            println!("{}", "Could not determine the intent of your query.".red().bold());
+            println!(
+                "{}",
+                "Could not determine the intent of your query.".red().bold()
+            );
         }
     }
 
     Ok(())
+}
+
+fn print_analysis_results(analysis: &ProjectAnalysis) {
+    println!("\nProject Analysis Results:");
+    println!("------------------------");
+
+    println!("\nLanguages:");
+    for lang in &analysis.languages {
+        println!(
+            "  {} ({:.1}% - {} lines)",
+            lang.name.bold(),
+            lang.percentage,
+            lang.loc
+        );
+    }
+
+    println!("\nFrameworks:");
+    for framework in &analysis.frameworks {
+        println!(
+            "  {} {} ({})",
+            framework.name.bold(),
+            framework.version.as_deref().unwrap_or("unknown version"),
+            framework.language
+        );
+    }
+
+    println!("\nDependencies:");
+    for dep in &analysis.dependencies {
+        let dep_type = if dep.is_dev {
+            "dev".yellow()
+        } else {
+            "prod".green()
+        };
+        println!(
+            "  {} {} ({}) from {}",
+            dep.name.bold(),
+            dep.version,
+            dep_type,
+            dep.source
+        );
+    }
+
+    println!("\nProject Structure:");
+    println!("  Total Files: {}", analysis.structure.total_files);
+    println!("  Total Size: {} bytes", analysis.structure.total_size);
+
+    println!("\nConfig Files:");
+    for config in &analysis.config_files {
+        println!("  {} ({})", config.path.display(), config.file_type);
+    }
+
+    if let Some(insights) = &analysis.llm_insights {
+        println!("\nAI Insights:");
+        println!("{}", insights);
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]

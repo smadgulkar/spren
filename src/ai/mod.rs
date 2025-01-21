@@ -1,23 +1,54 @@
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, AUTHORIZATION};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::StatusCode;
-use serde_json::json;
 use serde::Deserialize;
-use std::time::Duration;
+use serde_json::json;
 use serde_json::Value;
+use std::time::Duration;
 
-mod schema;
-mod response;
 mod error;
+mod response;
+mod schema;
 mod tests;
 
-pub use error::AIError;
-pub use response::{CommandChain, CommandStep};
-use response::VersionedResponse;
-use crate::config::{Config, AIProvider};
+use crate::config::{AIProvider, Config};
 use crate::shell::ShellType;
+pub use error::AIError;
+use response::VersionedResponse;
+pub use response::{CommandChain, CommandStep};
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY: u64 = 1000; // milliseconds
+
+// Add these struct definitions at the top level
+#[derive(Debug, Deserialize)]
+struct AnthropicResponse {
+    #[serde(default)]
+    content: Vec<AnthropicContent>,
+    #[serde(default)]
+    messages: Vec<AnthropicContent>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicContent {
+    text: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponse {
+    choices: Vec<OpenAIChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChoice {
+    message: OpenAIMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIMessage {
+    content: String,
+}
 
 pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
     match config.ai.provider {
@@ -26,25 +57,26 @@ pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandCh
     }
 }
 
-async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
+async fn get_anthropic_command_chain(
+    query: &str,
+    config: &Config,
+) -> Result<CommandChain, AIError> {
     let mut retries = 0;
     let mut last_error = None;
 
     while retries < MAX_RETRIES {
         match try_anthropic_request(query, config).await {
             Ok(chain) => return Ok(chain),
-            Err(e) => {
-                match e {
-                    AIError::RateLimitError(_) | AIError::NetworkError(_) => {
-                        let delay = INITIAL_RETRY_DELAY * 2u64.pow(retries);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        retries += 1;
-                        last_error = Some(e);
-                        continue;
-                    }
-                    _ => return Err(e),
+            Err(e) => match e {
+                AIError::RateLimitError(_) | AIError::NetworkError(_) => {
+                    let delay = INITIAL_RETRY_DELAY * 2u64.pow(retries);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    retries += 1;
+                    last_error = Some(e);
+                    continue;
                 }
-            }
+                _ => return Err(e),
+            },
         }
     }
 
@@ -52,20 +84,28 @@ async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<Com
 }
 
 async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandChain, AIError> {
-    let api_key = config.ai.anthropic_api_key.as_ref()
-        .ok_or_else(|| AIError::ValidationError("Anthropic API key not configured".to_string()))?;
+    let api_key =
+        config.ai.anthropic_api_key.as_ref().ok_or_else(|| {
+            AIError::ValidationError("Anthropic API key not configured".to_string())
+        })?;
 
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
     headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-    headers.insert("x-api-key", HeaderValue::from_str(api_key)
-        .map_err(|e| AIError::ValidationError(format!("Invalid API key: {}", e)))?);
+    headers.insert(
+        "x-api-key",
+        HeaderValue::from_str(api_key)
+            .map_err(|e| AIError::ValidationError(format!("Invalid API key: {}", e)))?,
+    );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     let _shell_type = ShellType::detect();
     let _shell_name = _shell_type.get_shell_name();
 
-    let api_url = config.ai.api_url.as_deref()
+    let api_url = config
+        .ai
+        .api_url
+        .as_deref()
         .unwrap_or("https://api.anthropic.com/v1/messages");
 
     let response = client
@@ -95,37 +135,31 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
             return Err(AIError::AuthenticationError("Invalid API key".to_string()));
         }
         status => {
-            let error_body = response.text().await
+            let error_body = response
+                .text()
+                .await
                 .unwrap_or_else(|_| "Could not read error response".to_string());
             return Err(AIError::APIError(format!(
-                "Unexpected status code: {} - Response: {}", 
+                "Unexpected status code: {} - Response: {}",
                 status, error_body
             )));
         }
     }
 
-    let response_text = response.text().await
+    let response_text = response
+        .text()
+        .await
         .map_err(|e| AIError::NetworkError(format!("Failed to read response body: {}", e)))?;
 
     println!("Raw response: {}", response_text);
 
-    #[derive(Debug, Deserialize)]
-    struct AnthropicResponse {
-        #[serde(default)]
-        content: Vec<AnthropicContent>,
-        #[serde(default)]
-        messages: Vec<AnthropicContent>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    struct AnthropicContent {
-        text: String,
-        #[serde(default)]
-        content: String,
-    }
-
-    let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
-        .map_err(|e| AIError::ParseError(format!("Failed to parse Anthropic response: {} - Raw response: {}", e, response_text)))?;
+    let anthropic_response: AnthropicResponse =
+        serde_json::from_str(&response_text).map_err(|e| {
+            AIError::ParseError(format!(
+                "Failed to parse Anthropic response: {} - Raw response: {}",
+                e, response_text
+            ))
+        })?;
 
     let content = if !anthropic_response.content.is_empty() {
         &anthropic_response.content
@@ -133,8 +167,9 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
         &anthropic_response.messages
     };
 
-    let ai_response = content.last()
-        .ok_or_else(|| AIError::ParseError(format!("Empty response from Anthropic: {}", response_text)))?;
+    let ai_response = content.last().ok_or_else(|| {
+        AIError::ParseError(format!("Empty response from Anthropic: {}", response_text))
+    })?;
 
     let response_text = if !ai_response.text.is_empty() {
         &ai_response.text
@@ -147,17 +182,19 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
     // Find and validate JSON content
     let json_text = extract_json(response_text)?;
 
-    let versioned_response: VersionedResponse = serde_json::from_str(&json_text)
-        .map_err(|e| AIError::ParseError(format!(
-            "Failed to parse command chain JSON: {} - Response text: {}", 
+    let versioned_response: VersionedResponse = serde_json::from_str(&json_text).map_err(|e| {
+        AIError::ParseError(format!(
+            "Failed to parse command chain JSON: {} - Response text: {}",
             e, json_text
-        )))?;
+        ))
+    })?;
 
     versioned_response.into_command_chain()
 }
 
 pub fn extract_json(text: &str) -> Result<String, AIError> {
-    let json_start = text.find('{')
+    let json_start = text
+        .find('{')
         .ok_or_else(|| AIError::ParseError("No JSON found in response".to_string()))?;
     let potential_json = &text[json_start..];
 
@@ -176,7 +213,7 @@ pub fn extract_json(text: &str) -> Result<String, AIError> {
     let mut last_valid_pos = None;
     let mut in_string = false;
     let mut escape_next = false;
-    let mut in_heredoc = false;  // Add tracking for heredoc
+    let mut in_heredoc = false; // Add tracking for heredoc
     let chars: Vec<char> = potential_json.chars().collect();
 
     for (i, &c) in chars.iter().enumerate() {
@@ -190,10 +227,10 @@ pub fn extract_json(text: &str) -> Result<String, AIError> {
             '"' if !in_heredoc => in_string = !in_string,
             '@' if !in_string => {
                 // Check for heredoc start/end
-                if i > 0 && chars[i-1] == '"' {
+                if i > 0 && chars[i - 1] == '"' {
                     in_heredoc = !in_heredoc;
                 }
-            },
+            }
             '{' if !in_string && !in_heredoc => brace_count += 1,
             '}' if !in_string && !in_heredoc => {
                 brace_count -= 1;
@@ -219,7 +256,7 @@ pub fn extract_json(text: &str) -> Result<String, AIError> {
     // If all else fails, try preprocessing the JSON
     println!("Attempting JSON preprocessing...");
     let preprocessed = preprocess_json(potential_json);
-    
+
     if let Ok(parsed) = serde_json::from_str::<Value>(&preprocessed) {
         if parsed.get("version").is_some() && parsed.get("steps").is_some() {
             println!("Preprocessing successful!");
@@ -227,22 +264,24 @@ pub fn extract_json(text: &str) -> Result<String, AIError> {
         }
     }
 
-    Err(AIError::ParseError("Could not parse response as valid JSON".to_string()))
+    Err(AIError::ParseError(
+        "Could not parse response as valid JSON".to_string(),
+    ))
 }
 
 fn preprocess_json(json: &str) -> String {
     // First normalize all newlines to \n
     let normalized = json.replace("\r\n", "\n");
-    
+
     let lines: Vec<&str> = normalized.lines().collect();
     let mut processed = String::new();
     let mut in_heredoc = false;
     let mut current_command = String::new();
     let mut heredoc_content = String::new();
-    
+
     for line in lines {
         let trimmed = line.trim();
-        
+
         if trimmed.contains("\"command\"") {
             // Start of a new command
             if !current_command.is_empty() {
@@ -251,7 +290,7 @@ fn preprocess_json(json: &str) -> String {
             }
             current_command.clear();
             heredoc_content.clear();
-            
+
             if trimmed.contains("@\"") || trimmed.contains("@'") {
                 in_heredoc = true;
                 // Keep the command part but replace heredoc start
@@ -265,18 +304,18 @@ fn preprocess_json(json: &str) -> String {
             if trimmed.contains("\"@") || trimmed.contains("'@") {
                 // End of heredoc - combine everything
                 in_heredoc = false;
-                
+
                 // Properly escape the heredoc content
                 let escaped = heredoc_content
                     .trim_end()
                     .replace("\\", "\\\\")
                     .replace("\"", "\\\"")
                     .replace("\n", "\\n");
-                
+
                 current_command.push_str(&escaped);
                 current_command.push('"');
                 current_command.push_str(trimmed.split("@").last().unwrap_or(""));
-                
+
                 processed.push_str(&current_command);
                 processed.push('\n');
                 current_command.clear();
@@ -298,7 +337,7 @@ fn preprocess_json(json: &str) -> String {
             processed.push('\n');
         }
     }
-    
+
     // Add any remaining content
     if !current_command.is_empty() {
         processed.push_str(&current_command);
@@ -315,18 +354,16 @@ async fn get_openai_command_chain(query: &str, config: &Config) -> Result<Comman
     while retries < MAX_RETRIES {
         match try_openai_request(query, config).await {
             Ok(chain) => return Ok(chain),
-            Err(e) => {
-                match e {
-                    AIError::RateLimitError(_) | AIError::NetworkError(_) => {
-                        let delay = INITIAL_RETRY_DELAY * 2u64.pow(retries);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        retries += 1;
-                        last_error = Some(e);
-                        continue;
-                    }
-                    _ => return Err(e),
+            Err(e) => match e {
+                AIError::RateLimitError(_) | AIError::NetworkError(_) => {
+                    let delay = INITIAL_RETRY_DELAY * 2u64.pow(retries);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
+                    retries += 1;
+                    last_error = Some(e);
+                    continue;
                 }
-            }
+                _ => return Err(e),
+            },
         }
     }
 
@@ -334,19 +371,28 @@ async fn get_openai_command_chain(query: &str, config: &Config) -> Result<Comman
 }
 
 async fn try_openai_request(query: &str, config: &Config) -> Result<CommandChain, AIError> {
-    let api_key = config.ai.openai_api_key.as_ref()
+    let api_key = config
+        .ai
+        .openai_api_key
+        .as_ref()
         .ok_or_else(|| AIError::ValidationError("OpenAI API key not configured".to_string()))?;
 
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
-    headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", api_key))
-        .map_err(|e| AIError::ValidationError(format!("Invalid API key: {}", e)))?);
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {}", api_key))
+            .map_err(|e| AIError::ValidationError(format!("Invalid API key: {}", e)))?,
+    );
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     let _shell_type = ShellType::detect();
     let _shell_name = _shell_type.get_shell_name();
 
-    let api_url = config.ai.api_url.as_deref()
+    let api_url = config
+        .ai
+        .api_url
+        .as_deref()
         .unwrap_or("https://api.openai.com/v1/chat/completions");
 
     let response = client
@@ -379,11 +425,16 @@ async fn try_openai_request(query: &str, config: &Config) -> Result<CommandChain
             return Err(AIError::AuthenticationError("Invalid API key".to_string()));
         }
         status => {
-            return Err(AIError::APIError(format!("Unexpected status code: {}", status)));
+            return Err(AIError::APIError(format!(
+                "Unexpected status code: {}",
+                status
+            )));
         }
     }
 
-    let response_text = response.text().await
+    let response_text = response
+        .text()
+        .await
         .map_err(|e| AIError::NetworkError(format!("Failed to read response body: {}", e)))?;
 
     let versioned_response: VersionedResponse = serde_json::from_str(&response_text)
@@ -434,4 +485,186 @@ fn format_prompt(query: &str, shell_name: &str) -> String {
          }}",
         python_template, shell_name, query
     )
-} 
+}
+
+pub async fn get_analysis(prompt: &str, config: &Config) -> Result<String, AIError> {
+    let api_key =
+        match config.ai.provider {
+            AIProvider::Anthropic => config.ai.anthropic_api_key.as_ref().ok_or_else(|| {
+                AIError::ValidationError("Anthropic API key not configured".to_string())
+            })?,
+            AIProvider::OpenAI => config.ai.openai_api_key.as_ref().ok_or_else(|| {
+                AIError::ValidationError("OpenAI API key not configured".to_string())
+            })?,
+        };
+
+    let client = reqwest::Client::new();
+    let mut headers = HeaderMap::new();
+
+    // Set up provider-specific headers and request body
+    let (request_body, api_url) = match config.ai.provider {
+        AIProvider::Anthropic => {
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_str(api_key)
+                    .map_err(|e| AIError::ValidationError(format!("Invalid API key: {}", e)))?,
+            );
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+            let body = json!({
+                "model": &config.ai.model,
+                "max_tokens": config.ai.max_tokens,
+                "messages": [{
+                    "role": "user",
+                    "content": format!("Project Analysis Request:\n\n{}\n\nProvide a comprehensive analysis following the specified format.", prompt)
+                }]
+            });
+
+            (
+                body,
+                config
+                    .ai
+                    .api_url
+                    .as_deref()
+                    .unwrap_or("https://api.anthropic.com/v1/messages"),
+            )
+        }
+        AIProvider::OpenAI => {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {}", api_key))
+                    .map_err(|e| AIError::ValidationError(format!("Invalid API key: {}", e)))?,
+            );
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+            let body = json!({
+                "model": &config.ai.model,
+                "max_tokens": config.ai.max_tokens,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": format!("Project Analysis Request:\n\n{}\n\nProvide a comprehensive analysis following the specified format.", prompt)
+                    }
+                ]
+            });
+
+            (
+                body,
+                config
+                    .ai
+                    .api_url
+                    .as_deref()
+                    .unwrap_or("https://api.openai.com/v1/chat/completions"),
+            )
+        }
+    };
+
+    let response = client
+        .post(api_url)
+        .headers(headers)
+        .json(&request_body)
+        .send()
+        .await
+        .map_err(|e| AIError::NetworkError(e.to_string()))?;
+
+    match response.status() {
+        StatusCode::OK => (),
+        StatusCode::TOO_MANY_REQUESTS => {
+            return Err(AIError::RateLimitError("Rate limit exceeded".to_string()));
+        }
+        StatusCode::UNAUTHORIZED => {
+            return Err(AIError::AuthenticationError("Invalid API key".to_string()));
+        }
+        status => {
+            return Err(AIError::APIError(format!(
+                "Unexpected status code: {}",
+                status
+            )));
+        }
+    }
+
+    let response_text = response
+        .text()
+        .await
+        .map_err(|e| AIError::NetworkError(format!("Failed to read response body: {}", e)))?;
+
+    match config.ai.provider {
+        AIProvider::Anthropic => {
+            let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
+                .map_err(|e| {
+                    AIError::ParseError(format!(
+                        "Failed to parse Anthropic response: {} - Raw response: {}",
+                        e, response_text
+                    ))
+                })?;
+
+            let content = if !anthropic_response.content.is_empty() {
+                &anthropic_response.content
+            } else {
+                &anthropic_response.messages
+            };
+
+            let ai_response = content.last().ok_or_else(|| {
+                AIError::ParseError(format!("Empty response from Anthropic: {}", response_text))
+            })?;
+
+            Ok(if !ai_response.text.is_empty() {
+                ai_response.text.clone()
+            } else {
+                ai_response.content.clone()
+            })
+        }
+        AIProvider::OpenAI => {
+            let openai_response: OpenAIResponse =
+                serde_json::from_str(&response_text).map_err(|e| {
+                    AIError::ParseError(format!("Failed to parse OpenAI response: {}", e))
+                })?;
+
+            openai_response
+                .choices
+                .first()
+                .map(|choice| choice.message.content.clone())
+                .ok_or_else(|| AIError::ParseError("Empty response from OpenAI".to_string()))
+        }
+    }
+}
+
+// Move system prompt to a constant
+const SYSTEM_PROMPT: &str = r#"You are a technical project analyzer. Analyze the provided project information and provide detailed insights in the following format:
+
+Project Overview:
+- Main purpose and type of project
+- Primary technologies used
+- Project scale and complexity
+
+Architecture Analysis:
+- Design patterns identified
+- Code organization
+- Component relationships
+- Notable architectural decisions
+
+Technical Assessment:
+- Code quality indicators
+- Performance considerations
+- Scalability aspects
+- Testing approach
+
+Security Review:
+- Dependency vulnerabilities
+- Security best practices
+- Authentication/authorization patterns
+- Data handling concerns
+
+Recommendations:
+- Immediate improvements
+- Technical debt items
+- Modernization opportunities
+- Performance optimizations
+- Security enhancements
+
+Keep responses technical, specific, and actionable. Focus on patterns and practices rather than individual code lines."#;
