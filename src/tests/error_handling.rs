@@ -1,6 +1,10 @@
 use super::TestUtils;
 use crate::ai::AIError;
 use crate::executor::chain::ChainExecutor;
+use crate::analysis::ProjectAnalyzer;
+use crate::config::Config;
+use anyhow::Result;
+use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_invalid_command_handling() {
@@ -24,4 +28,33 @@ async fn test_rollback_mechanism() {
 
     let rollback_result = executor.rollback().await;
     assert!(rollback_result.is_ok(), "Rollback should succeed");
+}
+
+#[tokio::test]
+async fn test_invalid_project_path() -> Result<()> {
+    let analyzer = ProjectAnalyzer::new(PathBuf::from("/nonexistent/path"));
+    let result = analyzer.analyze().await;
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_invalid_api_key() -> Result<()> {
+    let utils = TestUtils::new()?;
+    let project_dir = utils.create_test_project()?;
+    
+    let mut config = Config::load_test_config()?;
+    config.ai.anthropic_api_key = Some("invalid_key".to_string());
+    
+    let analyzer = ProjectAnalyzer::new(&project_dir);
+    let result = analyzer.analyze_with_llm(&config).await;
+    
+    match result {
+        Err(e) => {
+            let error_string = e.to_string();
+            assert!(error_string.contains("Invalid API key") || error_string.contains("Unauthorized"));
+            Ok(())
+        }
+        Ok(_) => panic!("Expected error for invalid API key"),
+    }
 }
