@@ -12,11 +12,11 @@ impl std::fmt::Display for AIError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NetworkError(msg) => write!(f, "Network Error: {}", msg),
-            Self::ParseError(msg) => write!(f, "Parse Error: Could not understand AI response - {}. Please try rephrasing your request.", msg),
+            Self::ParseError(_) => write!(f, "Failed to parse AI response. Please try again."),
             Self::ValidationError(msg) => write!(f, "Validation Error: {}", msg),
-            Self::AuthenticationError(msg) => write!(f, "Authentication Error: {}. Please check your API key in the config file.", msg),
-            Self::RateLimitError(msg) => write!(f, "Rate Limit Error: {}. Please wait a moment and try again.", msg),
-            Self::APIError(msg) => write!(f, "API Error: {}. Please try again or check your request.", msg),
+            Self::AuthenticationError(msg) => write!(f, "Authentication Error: {}", msg),
+            Self::RateLimitError(msg) => write!(f, "Rate Limit Error: {}", msg),
+            Self::APIError(msg) => write!(f, "API Error: {}", msg),
         }
     }
 }

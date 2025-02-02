@@ -11,6 +11,14 @@ repository = "https://github.com/smadgulkar/spren"
 keywords = ["cli", "ai", "assistant", "shell", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
 
+[lib]
+name = "spren"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spren"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }
@@ -34,7 +42,3 @@ lto = true
 codegen-units = 1
 strip = true  # Automatically strip symbols from the binary
 panic = "abort"  # Remove panic unwinding code
-
-[[bin]]
-name = "spren"
-path = "src/main.rs"

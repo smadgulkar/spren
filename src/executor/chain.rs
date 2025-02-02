@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow};
 use std::time::{Instant, Duration};
 use crate::ai::{CommandChain, CommandStep};
-use crate::executor::CommandOutput;
+use crate::executor::{CommandOutput, execute_command};
+use crate::path_manager::PathManager;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChainStatus {
@@ -18,17 +19,19 @@ pub struct ChainExecutor {
     start_time: Option<Instant>,
     status: ChainStatus,
     failed_step: Option<usize>,
+    path_manager: PathManager,
 }
 
 impl ChainExecutor {
-    pub fn new(chain: CommandChain) -> Self {
-        Self {
+    pub fn new(chain: CommandChain) -> Result<Self> {
+        Ok(Self {
             chain,
             current_step: 0,
             start_time: None,
             status: ChainStatus::NotStarted,
             failed_step: None,
-        }
+            path_manager: PathManager::new()?,
+        })
     }
 
     pub fn preview(&self) -> String {
@@ -76,17 +79,18 @@ impl ChainExecutor {
             self.status = ChainStatus::Running;
         }
 
-        let step = &self.chain.steps[self.current_step];
-        match super::execute_command(&step.command).await {
-            Ok(output) => {
-                if !output.success {
-                    self.status = ChainStatus::Failed;
-                    self.failed_step = Some(self.current_step);
-                    return Err(anyhow!("Step {} failed: {}", 
-                        self.current_step + 1, output.stderr));
+        match self.execute_step().await {
+            Ok(outputs) => {
+                if let Some(output) = outputs.first() {
+                    if !output.success {
+                        self.status = ChainStatus::Failed;
+                        self.failed_step = Some(self.current_step);
+                        return Err(anyhow!("Step {} failed: {}", 
+                            self.current_step + 1, output.stderr));
+                    }
                 }
                 self.current_step += 1;
-                Ok(Some(output))
+                Ok(outputs.first().cloned())
             },
             Err(e) => {
                 self.status = ChainStatus::Failed;
@@ -110,7 +114,7 @@ impl ChainExecutor {
         while self.current_step > 0 {
             self.current_step -= 1;
             if let Some(rollback_cmd) = &self.chain.steps[self.current_step].rollback_command {
-                match super::execute_command(rollback_cmd).await {
+                match execute_command(rollback_cmd).await {
                     Ok(output) => outputs.push(output),
                     Err(e) => return Err(anyhow!("Rollback failed at step {}: {}", 
                         self.current_step + 1, e)),
@@ -166,5 +170,40 @@ impl ChainExecutor {
         } else {
             None
         }
+    }
+
+    pub async fn execute_step(&mut self) -> Result<Vec<CommandOutput>> {
+        let step = &self.chain.steps[self.current_step];
+        let command = step.command.trim();
+        
+        // Handle cd commands specially
+        if command.to_lowercase().starts_with("cd ") {
+            let path = command[3..].trim();
+            self.path_manager.change_directory(path)?;
+            return Ok(vec![CommandOutput {
+                stdout: format!("Changed directory to {}", path),
+                stderr: String::new(),
+                success: true,
+            }]);
+        }
+
+        // Execute command in current directory
+        let output = execute_command(command).await?;
+        
+        // If the command created a directory and was successful, update our path
+        if command.to_lowercase().starts_with("mkdir ") && output.success {
+            let dir_name = command[6..].trim();
+            // Only update internal path tracking, don't actually cd
+            if let Ok(current) = std::env::current_dir() {
+                self.path_manager.update_current_dir(current.join(dir_name))?;
+            }
+        }
+        
+        Ok(vec![output])
+    }
+
+    pub fn cleanup(&mut self) -> Result<()> {
+        // Always restore original directory
+        self.path_manager.restore_initial_directory()
     }
 } 

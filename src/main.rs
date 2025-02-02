@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use colored::*;
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use crate::executor::chain::ChainExecutor;
 use crate::ai::AIError;
 
@@ -10,6 +10,7 @@ mod config;
 mod executor;
 mod shell;
 mod intent;
+mod path_manager;
 
 use intent::{Intent, IntentAnalyzer};
 
@@ -17,6 +18,9 @@ use intent::{Intent, IntentAnalyzer};
 async fn main() -> Result<()> {
     // Load or create config
     let config_path = config::get_config_path()?;
+    
+    println!("Config path: {:?}", config_path); // Add this line for debugging
+    
     if !config_path.exists() {
         config::Config::create_default(&config_path)?;
         println!("Created default config file at {:?}", config_path);
@@ -25,6 +29,14 @@ async fn main() -> Result<()> {
     }
 
     let config = config::Config::load(&config_path)?;
+    
+    // Validate API key exists
+    if config.ai.anthropic_api_key.is_none() && config.ai.openai_api_key.is_none() {
+        println!("No API key found in config file at {:?}", config_path);
+        println!("Please add your Anthropic or OpenAI API key to the config file.");
+        return Ok(());
+    }
+
     let shell_type = shell::ShellType::detect();
 
     println!("{}", "Spren - Your AI Shell Assistant".green().bold());
@@ -61,13 +73,11 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                 Ok(chain) => chain,
                 Err(e) => {
                     match e {
-                        AIError::RateLimitError(msg) => {
-                            println!("{}: {}. Retrying...", "Rate limit".yellow().bold(), msg);
+                        AIError::RateLimitError(_msg) => {
                             tokio::time::sleep(Duration::from_secs(2)).await;
                             ai::get_command_chain(query, &config).await.map_err(|e| anyhow!(e.to_string()))?
                         }
-                        AIError::NetworkError(msg) => {
-                            println!("{}: {}. Retrying...", "Network error".yellow().bold(), msg);
+                        AIError::NetworkError(_msg) => {
                             tokio::time::sleep(Duration::from_secs(1)).await;
                             ai::get_command_chain(query, &config).await.map_err(|e| anyhow!(e.to_string()))?
                         }
@@ -76,7 +86,7 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                 }
             };
 
-            let mut executor = ChainExecutor::new(chain);
+            let mut executor = ChainExecutor::new(chain)?;
 
             // Show preview
             println!("\n{}", "Command Chain Preview:".blue().bold());
@@ -88,77 +98,69 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
 
                 let mut response = String::new();
                 io::stdin().read_line(&mut response)?;
-                let response = response.trim().to_lowercase();
-
-                match response.as_str() {
-                    "y" => {
-                        // Execute all steps
-                        let start_time = Instant::now();
+                
+                match response.trim().to_lowercase().as_str() {
+                    "y" | "yes" => {
                         match executor.execute_all().await {
                             Ok(outputs) => {
-                                println!("\n{}", "✓ Command chain completed successfully".green());
-                                if config.display.show_execution_time {
-                                    println!("Total execution time: {:?}", start_time.elapsed());
-                                }
                                 for output in outputs {
                                     if !output.stdout.is_empty() {
                                         println!("{}", output.stdout);
                                     }
                                     if !output.stderr.is_empty() {
-                                        println!("{}: {}", "Note".yellow().bold(), output.stderr);
+                                        eprintln!("{}", output.stderr.red());
                                     }
                                 }
                             }
                             Err(e) => {
-                                println!("\n{}: {}", "Chain execution failed".red().bold(), e);
-                                println!("\nWould you like to rollback the changes? [y/N] ");
+                                eprintln!("Chain execution failed: {}", e);
+                                print!("\nWould you like to rollback the changes? [y/N] ");
                                 io::stdout().flush()?;
                                 
-                                let mut rollback = String::new();
-                                io::stdin().read_line(&mut rollback)?;
-                                if rollback.trim().to_lowercase() == "y" {
+                                let mut response = String::new();
+                                io::stdin().read_line(&mut response)?;
+                                
+                                if response.trim().to_lowercase() == "y" {
                                     match executor.rollback().await {
-                                        Ok(_) => println!("✓ Successfully rolled back changes"),
-                                        Err(e) => println!("Failed to rollback: {}", e),
+                                        Ok(_) => println!("Rollback successful"),
+                                        Err(e) => eprintln!("Rollback failed: {}", e),
                                     }
                                 }
                             }
                         }
                     }
                     "s" => {
-                        // Step by step execution
                         while !executor.is_complete() {
                             if let Some(step) = executor.current_step_details() {
                                 let (current, total) = executor.progress();
-                                println!("\n{} ({}/{})", "Current step:".blue().bold(), current + 1, total);
+                                println!("\nStep {} of {}: {}", current + 1, total, step.explanation);
                                 println!("Command: {}", step.command);
-                                println!("Explanation: {}", step.explanation);
                                 
-                                print!("\nExecute this step? [y/n/s(skip)] ");
+                                print!("Execute this step? [y/N/s(skip)] ");
                                 io::stdout().flush()?;
                                 
-                                let mut step_response = String::new();
-                                io::stdin().read_line(&mut step_response)?;
+                                let mut response = String::new();
+                                io::stdin().read_line(&mut response)?;
                                 
-                                match step_response.trim().to_lowercase().as_str() {
-                                    "y" => {
+                                match response.trim().to_lowercase().as_str() {
+                                    "y" | "yes" => {
                                         match executor.execute_next().await {
                                             Ok(Some(output)) => {
                                                 if !output.stdout.is_empty() {
                                                     println!("{}", output.stdout);
                                                 }
                                                 if !output.stderr.is_empty() {
-                                                    println!("{}: {}", "Note".yellow().bold(), output.stderr);
+                                                    eprintln!("{}", output.stderr.red());
                                                 }
                                             }
                                             Ok(None) => break,
                                             Err(e) => {
-                                                println!("\n{}: {}", "Step failed".red().bold(), e);
-                                                return Ok(());
+                                                eprintln!("Step failed: {}", e);
+                                                break;
                                             }
                                         }
                                     }
-                                    "s" => {
+                                    "s" | "skip" => {
                                         executor.skip_step()?;
                                     }
                                     _ => {
@@ -168,7 +170,6 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                                 }
                             }
                         }
-                        println!("\n{}", "✓ Command chain completed".green());
                     }
                     _ => {
                         println!("Chain execution cancelled");

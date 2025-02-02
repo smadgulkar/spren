@@ -30,7 +30,7 @@ impl ShellType {
         // On Windows, check if powershell is available
         #[cfg(windows)]
         {
-            if let Ok(parent) = env::var("PSModulePath") {
+            if let Ok(_) = env::var("PSModulePath") {
                 return ShellType::Powershell;
             }
             // Additional Windows-specific check
@@ -70,16 +70,23 @@ impl ShellType {
 
     pub fn format_command(&self, command: &str) -> String {
         match self {
-            ShellType::Bash => command.to_string(),
-            ShellType::Powershell => {
-                // PowerShell commands don't need single quote wrapping when using -Command
-                command.to_string()
-            },
             ShellType::Cmd => {
-                // Escape special characters for CMD
-                command.replace("\"", "\\\"")
+                let command = command.trim();
+                
+                // Handle cd commands
+                if command.to_lowercase().starts_with("cd ") {
+                    let path = command[3..].trim();
+                    let clean_path = path.trim_matches('"')
+                        .replace("/", "\\")
+                        .replace("\\\\", "\\");
+                    return format!("cd /d \"{}\"", clean_path);
+                }
+                
+                // Handle other commands
+                command.replace("/", "\\")
+                      .replace("\\\\", "\\")
             },
-            ShellType::Other(_) => command.to_string(), // Default to no formatting for unknown shells
+            _ => command.to_string(),
         }
     }
 }

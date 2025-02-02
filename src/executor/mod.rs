@@ -3,6 +3,7 @@ pub mod chain;
 use anyhow::Result;
 use std::process::Command;
 
+#[derive(Debug, Clone)]
 pub struct CommandOutput {
     pub stdout: String,
     pub stderr: String,
@@ -11,12 +12,23 @@ pub struct CommandOutput {
 
 pub async fn execute_command(command: &str) -> Result<CommandOutput> {
     let shell_type = crate::shell::ShellType::detect();
-    let (shell, args) = shell_type.get_shell_command();
+    
+    // Validate command before execution
+    if let Err(e) = validate_command(&shell_type, command) {
+        return Ok(CommandOutput {
+            stdout: String::new(),
+            stderr: e.to_string(),
+            success: false,
+        });
+    }
 
+    let (shell, args) = shell_type.get_shell_command();
     let formatted_command = shell_type.format_command(command);
 
     let mut cmd = Command::new(shell);
-    cmd.args(args).arg(&formatted_command);
+    cmd.args(args)
+       .arg(&formatted_command)
+       .current_dir(std::env::current_dir()?); // Explicitly set current directory
 
     let output = cmd.output()?;
 
@@ -41,4 +53,25 @@ pub async fn execute_command(command: &str) -> Result<CommandOutput> {
         stderr: stderr.trim().to_string(),
         success
     })
+}
+
+fn validate_command(shell_type: &crate::shell::ShellType, command: &str) -> Result<()> {
+    match shell_type {
+        crate::shell::ShellType::Cmd => {
+            // Check for problematic CMD patterns
+            if command.contains("\\\\") {
+                return Err(anyhow::anyhow!("Invalid path format with double backslashes"));
+            }
+            
+            // Special handling for cd commands
+            if command.trim().to_lowercase().starts_with("cd ") {
+                let path = command.trim_start_matches("cd ").trim();
+                if path.starts_with("\\\\") {
+                    return Err(anyhow::anyhow!("UNC paths are not supported for cd command"));
+                }
+            }
+        },
+        _ => {}  // Add validation for other shells as needed
+    }
+    Ok(())
 } 

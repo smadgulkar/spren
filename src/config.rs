@@ -84,6 +84,28 @@ impl Config {
         let content = fs::read_to_string(path)?;
         Ok(toml::from_str(&content)?)
     }
+
+    pub fn ensure_config_exists() -> Result<Self> {
+        let config_path = get_config_path()?;
+        
+        if !config_path.exists() {
+            println!("Creating default config at {:?}", config_path);
+            Self::create_default(&config_path)?;
+            println!("Please add your API key to the config file");
+            std::process::exit(1);
+        }
+
+        let config = Self::load(&config_path)?;
+        
+        // Validate API key
+        if config.ai.anthropic_api_key.is_none() && config.ai.openai_api_key.is_none() {
+            println!("No API key found in config at {:?}", config_path);
+            println!("Please add either ANTHROPIC_API_KEY or OPENAI_API_KEY");
+            std::process::exit(1);
+        }
+
+        Ok(config)
+    }
 }
 
 pub fn get_config_path() -> Result<PathBuf> {

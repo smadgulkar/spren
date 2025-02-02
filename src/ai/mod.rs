@@ -3,7 +3,6 @@ use reqwest::StatusCode;
 use serde_json::json;
 use serde::Deserialize;
 use std::time::Duration;
-use serde_json::Value;
 
 mod schema;
 mod response;
@@ -107,7 +106,7 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
     let response_text = response.text().await
         .map_err(|e| AIError::NetworkError(format!("Failed to read response body: {}", e)))?;
 
-    println!("Raw response: {}", response_text);
+    println!("DEBUG: Raw AI response: {}", response_text);
 
     #[derive(Debug, Deserialize)]
     struct AnthropicResponse {
@@ -142,8 +141,6 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
         &ai_response.content
     };
 
-    println!("Extracted response text: {}", response_text);
-
     // Find and validate JSON content
     let json_text = extract_json(response_text)?;
 
@@ -157,155 +154,48 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
 }
 
 pub fn extract_json(text: &str) -> Result<String, AIError> {
-    let json_start = text.find('{')
-        .ok_or_else(|| AIError::ParseError("No JSON found in response".to_string()))?;
-    let potential_json = &text[json_start..];
+    // First try to find complete JSON object
+    if let Some(start) = text.find('{') {
+        let mut brace_count = 0;
+        let mut in_string = false;
+        let mut escape_next = false;
+        
+        for (i, c) in text[start..].char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
 
-    // Debug: Try direct parsing first
-    println!("Attempting direct parse...");
-    if let Ok(parsed) = serde_json::from_str::<Value>(potential_json) {
-        if parsed.get("version").is_some() && parsed.get("steps").is_some() {
-            println!("Direct parse successful!");
-            return Ok(potential_json.to_string());
-        }
-    }
-
-    // Debug: Try finding valid JSON substring
-    println!("Attempting to find valid JSON substring...");
-    let mut brace_count = 0;
-    let mut last_valid_pos = None;
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut in_heredoc = false;  // Add tracking for heredoc
-    let chars: Vec<char> = potential_json.chars().collect();
-
-    for (i, &c) in chars.iter().enumerate() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-
-        match c {
-            '\\' if in_string => escape_next = true,
-            '"' if !in_heredoc => in_string = !in_string,
-            '@' if !in_string => {
-                // Check for heredoc start/end
-                if i > 0 && chars[i-1] == '"' {
-                    in_heredoc = !in_heredoc;
-                }
-            },
-            '{' if !in_string && !in_heredoc => brace_count += 1,
-            '}' if !in_string && !in_heredoc => {
-                brace_count -= 1;
-                if brace_count == 0 {
-                    let test_json = &potential_json[..=i];
-                    if let Ok(parsed) = serde_json::from_str::<Value>(test_json) {
-                        if parsed.get("version").is_some() && parsed.get("steps").is_some() {
-                            last_valid_pos = Some(i);
+            match c {
+                '\\' => escape_next = true,
+                '"' => {
+                    if !escape_next {
+                        in_string = !in_string;
+                    }
+                },
+                '{' if !in_string => brace_count += 1,
+                '}' if !in_string => {
+                    brace_count -= 1;
+                    if brace_count == 0 {
+                        let json = &text[start..=start + i];
+                        // Validate it's proper JSON
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json) {
+                            if parsed.get("version").is_some() && parsed.get("steps").is_some() {
+                                return Ok(json.to_string());
+                            }
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
         }
     }
 
-    if let Some(end_pos) = last_valid_pos {
-        println!("Found valid JSON substring!");
-        let json_str = &potential_json[..=end_pos];
-        return Ok(json_str.to_string());
-    }
-
-    // If all else fails, try preprocessing the JSON
-    println!("Attempting JSON preprocessing...");
-    let preprocessed = preprocess_json(potential_json);
-    
-    if let Ok(parsed) = serde_json::from_str::<Value>(&preprocessed) {
-        if parsed.get("version").is_some() && parsed.get("steps").is_some() {
-            println!("Preprocessing successful!");
-            return Ok(preprocessed);
-        }
-    }
-
-    Err(AIError::ParseError("Could not parse response as valid JSON".to_string()))
-}
-
-fn preprocess_json(json: &str) -> String {
-    // First normalize all newlines to \n
-    let normalized = json.replace("\r\n", "\n");
-    
-    let lines: Vec<&str> = normalized.lines().collect();
-    let mut processed = String::new();
-    let mut in_heredoc = false;
-    let mut current_command = String::new();
-    let mut heredoc_content = String::new();
-    
-    for line in lines {
-        let trimmed = line.trim();
-        
-        if trimmed.contains("\"command\"") {
-            // Start of a new command
-            if !current_command.is_empty() {
-                processed.push_str(&current_command);
-                processed.push('\n');
-            }
-            current_command.clear();
-            heredoc_content.clear();
-            
-            if trimmed.contains("@\"") || trimmed.contains("@'") {
-                in_heredoc = true;
-                // Keep the command part but replace heredoc start
-                let cmd_part = trimmed.split("@").next().unwrap_or("");
-                current_command.push_str(cmd_part);
-                current_command.push('"');
-            } else {
-                current_command.push_str(trimmed);
-            }
-        } else if in_heredoc {
-            if trimmed.contains("\"@") || trimmed.contains("'@") {
-                // End of heredoc - combine everything
-                in_heredoc = false;
-                
-                // Properly escape the heredoc content
-                let escaped = heredoc_content
-                    .trim_end()
-                    .replace("\\", "\\\\")
-                    .replace("\"", "\\\"")
-                    .replace("\n", "\\n");
-                
-                current_command.push_str(&escaped);
-                current_command.push('"');
-                current_command.push_str(trimmed.split("@").last().unwrap_or(""));
-                
-                processed.push_str(&current_command);
-                processed.push('\n');
-                current_command.clear();
-            } else {
-                // Accumulate heredoc content
-                if !heredoc_content.is_empty() {
-                    heredoc_content.push('\n');
-                }
-                heredoc_content.push_str(line); // Use original line to preserve indentation
-            }
-        } else {
-            // Regular JSON line
-            if !current_command.is_empty() {
-                processed.push_str(&current_command);
-                processed.push('\n');
-                current_command.clear();
-            }
-            processed.push_str(trimmed);
-            processed.push('\n');
-        }
-    }
-    
-    // Add any remaining content
-    if !current_command.is_empty() {
-        processed.push_str(&current_command);
-        processed.push('\n');
-    }
-
-    processed
+    // If we couldn't find valid JSON, return the full error for debugging
+    Err(AIError::ParseError(format!(
+        "Could not find valid JSON response. Response text: {}",
+        text.chars().take(200).collect::<String>()
+    )))
 }
 
 async fn get_openai_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
@@ -393,45 +283,63 @@ async fn try_openai_request(query: &str, config: &Config) -> Result<CommandChain
 }
 
 fn format_prompt(query: &str, shell_name: &str) -> String {
-    let python_template = if shell_name == "CMD" {
-        "When creating Python scripts:\n\
-         1. Use a try-except block around input() calls\n\
-         2. Add a pause at the end using input('Press Enter to exit...')\n\
-         3. Handle EOF and KeyboardInterrupt exceptions\n"
+    let shell_template = if shell_name == "CMD" {
+        "For Windows CMD:\n\
+         1. Use 'echo.' to write content to files\n\
+         2. Use > for redirection\n\
+         3. Use ^ to escape special characters\n\
+         4. For HTML files, escape special characters and quotes\n\
+         5. Use type command for multi-line content\n"
     } else {
         ""
     };
 
     format!(
         "{}\n\
-         Break down this task into executable {} commands: '{}'\n\
-         For each step provide:\n\
-         1. The exact command to execute\n\
-         2. A brief explanation of what the command does\n\
-         3. Safety analysis (is it dangerous?)\n\
-         4. Estimated resource impact (CPU%, Memory MB, Disk MB, Network MB, Duration)\n\
-         5. A rollback command if applicable\n\
+         Task: {}\n\
+         Shell: {}\n\
          \n\
-         Respond in this JSON format with version:\n\
+         Return a JSON response with these steps:\n\
+         1. Create parent directories if needed\n\
+         2. Create and write the file content\n\
+         3. Verify the file was created\n\
+         \n\
+         Use this exact JSON format:\n\
+         ```json\n\
          {{\n\
            \"version\": \"1.0\",\n\
            \"steps\": [\n\
              {{\n\
-               \"command\": \"command string\",\n\
-               \"explanation\": \"what this step does\",\n\
+               \"command\": \"mkdir test_2\",\n\
+               \"explanation\": \"Create directory if it doesn't exist\",\n\
                \"is_dangerous\": false,\n\
                \"estimated_impact\": {{\n\
                  \"cpu_percentage\": 0.1,\n\
                  \"memory_mb\": 1.0,\n\
-                 \"disk_mb\": 0.0,\n\
+                 \"disk_mb\": 0.1,\n\
                  \"network_mb\": 0.0,\n\
                  \"duration_seconds\": 0.1\n\
                }},\n\
-               \"rollback_command\": \"command to undo this step (or null)\"\n\
+               \"rollback_command\": \"rmdir test_2\"\n\
+             }},\n\
+             {{\n\
+               \"command\": \"echo ^<!DOCTYPE html^>^<html^>... > index.html\",\n\
+               \"explanation\": \"Create HTML file with content\",\n\
+               \"is_dangerous\": false,\n\
+               \"estimated_impact\": {{\n\
+                 \"cpu_percentage\": 0.1,\n\
+                 \"memory_mb\": 1.0,\n\
+                 \"disk_mb\": 0.1,\n\
+                 \"network_mb\": 0.0,\n\
+                 \"duration_seconds\": 0.1\n\
+               }},\n\
+               \"rollback_command\": \"del index.html\"\n\
              }}\n\
            ],\n\
-           \"explanation\": \"overall explanation of the approach\"\n\
-         }}",
-        python_template, shell_name, query
+           \"explanation\": \"Create directory and HTML file with login form\"\n\
+         }}\n\
+         ```\n\
+         Do not include any other text or explanations outside the JSON block.",
+        shell_template, query, shell_name
     )
 } 
