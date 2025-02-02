@@ -4,6 +4,8 @@ use std::io::{self, Write};
 use std::time::Duration;
 use crate::executor::chain::ChainExecutor;
 use crate::ai::AIError;
+use crate::git::GitManager;
+use crate::intent::{Intent, IntentAnalyzer, GitOp};
 
 mod ai;
 mod config;
@@ -12,8 +14,8 @@ mod shell;
 mod intent;
 mod path_manager;
 mod code;
+mod git;
 
-use intent::{Intent, IntentAnalyzer};
 use code::CodeGenerator;
 
 #[tokio::main]
@@ -198,8 +200,69 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
         }
         Intent::GitOperation(git_intent) => {
             println!("{}", "Executing git operation...".yellow().bold());
-            println!("Operation: {:?}", git_intent.operation);
-            println!("Args: {:?}", git_intent.args);
+            
+            // Create GitManager for current directory
+            let current_dir = std::env::current_dir()?;
+            let git_manager = GitManager::new(&current_dir)?;
+
+            match git_intent.operation {
+                GitOp::Status | GitOp::Analyze => {
+                    let changes = git_manager.analyze_changes()?;
+                    
+                    if changes.staged_modified.is_empty() && 
+                       changes.staged_added.is_empty() && 
+                       changes.staged_deleted.is_empty() && 
+                       changes.unstaged_modified.is_empty() && 
+                       changes.untracked.is_empty() {
+                        println!("No changes detected");
+                        return Ok(());
+                    }
+
+                    println!("\n{}", "Git Status:".blue().bold());
+                    
+                    if !changes.staged_modified.is_empty() {
+                        println!("\n{}", "Modified (staged):".green());
+                        for file in changes.staged_modified {
+                            println!("  {}", file);
+                        }
+                    }
+
+                    if !changes.staged_added.is_empty() {
+                        println!("\n{}", "Added (staged):".green());
+                        for file in changes.staged_added {
+                            println!("  {}", file);
+                        }
+                    }
+
+                    if !changes.staged_deleted.is_empty() {
+                        println!("\n{}", "Deleted (staged):".yellow());
+                        for file in changes.staged_deleted {
+                            println!("  {}", file);
+                        }
+                    }
+
+                    if !changes.unstaged_modified.is_empty() {
+                        println!("\n{}", "Modified (unstaged):".red());
+                        for file in changes.unstaged_modified {
+                            println!("  {}", file);
+                        }
+                    }
+
+                    if !changes.untracked.is_empty() {
+                        println!("\n{}", "Untracked:".red().bold());
+                        for file in changes.untracked {
+                            println!("  {}", file);
+                        }
+                    }
+                },
+                GitOp::Branch => {
+                    let current_branch = git_manager.get_current_branch()?;
+                    println!("Current branch: {}", current_branch.green());
+                },
+                GitOp::Commit => {
+                    println!("Commit operation not implemented yet");
+                },
+            }
         }
         Intent::Unknown => {
             println!("{}", "Could not determine the intent of your query.".red().bold());
