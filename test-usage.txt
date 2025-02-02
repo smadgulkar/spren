@@ -1,0 +1,27 @@
+# View git status with analysis
+spren> analyze git changes
+spren> show modified files
+
+# Branch operations
+spren> create a new branch for feature/user-auth
+spren> switch to develop branch
+
+# Smart commit
+spren> commit changes with a good message
+
+# Create new files/projects
+spren> create a new rust module for handling user authentication
+spren> generate a python script for data processing
+spren> create a typescript react component for login form
+
+# Project Analysis
+spren> analyze project structure
+spren> show all rust source files
+
+# Code + Git
+spren> create a new feature branch and add typescript components for user dashboard
+spren> implement user authentication and commit changes
+
+# Multi-step Operations
+spren> create a new react component and stage it for commit
+spren> refactor the auth module and create a pull request

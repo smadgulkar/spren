@@ -11,8 +11,10 @@ mod executor;
 mod shell;
 mod intent;
 mod path_manager;
+mod code;
 
 use intent::{Intent, IntentAnalyzer};
+use code::CodeGenerator;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -178,8 +180,26 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                 }
             }
         }
-        Intent::CodeGeneration | Intent::GitOperation => {
-            println!("{}", "This feature is coming soon!".yellow().bold());
+        Intent::CodeGeneration(code_intent) => {
+            println!("{}", "Generating code...".yellow().bold());
+            println!("Language: {:?}", code_intent.language);
+            println!("Description: {}", code_intent.description);
+
+            let current_dir = std::env::current_dir()?;
+            let extension = code_intent.language.get_extension();
+            let generator = CodeGenerator::new(&current_dir, code_intent.language)?;
+
+            // For now, just create a basic file
+            let filename = format!("generated_code.{}", extension);
+            let path = current_dir.join(filename);
+
+            generator.generate_file(&path, "// Generated code\n// TODO: Implement AI code generation")?;
+            println!("Generated file at: {}", path.display());
+        }
+        Intent::GitOperation(git_intent) => {
+            println!("{}", "Executing git operation...".yellow().bold());
+            println!("Operation: {:?}", git_intent.operation);
+            println!("Args: {:?}", git_intent.args);
         }
         Intent::Unknown => {
             println!("{}", "Could not determine the intent of your query.".red().bold());
