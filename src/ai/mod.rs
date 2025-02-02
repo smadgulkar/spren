@@ -17,31 +17,75 @@ use crate::shell::ShellType;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY: u64 = 1000; // milliseconds
+const MAX_RETRY_DELAY: u64 = 10000; // 10 seconds max delay
 
-pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
-    match config.ai.provider {
-        AIProvider::Anthropic => get_anthropic_command_chain(query, config).await,
-        AIProvider::OpenAI => get_openai_command_chain(query, config).await,
+#[derive(Debug)]
+struct RetryConfig {
+    max_retries: u32,
+    initial_delay: u64,
+    max_delay: u64,
+    retryable_errors: Vec<RetryableError>,
+}
+
+#[derive(Debug, PartialEq)]
+enum RetryableError {
+    RateLimit,
+    Network,
+    ParseError,
+    EmptyResponse,
+}
+
+impl RetryConfig {
+    fn new() -> Self {
+        Self {
+            max_retries: MAX_RETRIES,
+            initial_delay: INITIAL_RETRY_DELAY,
+            max_delay: MAX_RETRY_DELAY,
+            retryable_errors: vec![
+                RetryableError::RateLimit,
+                RetryableError::Network,
+                RetryableError::ParseError,
+                RetryableError::EmptyResponse,
+            ],
+        }
+    }
+
+    fn should_retry(&self, error: &AIError) -> bool {
+        match error {
+            AIError::RateLimitError(_) => self.retryable_errors.contains(&RetryableError::RateLimit),
+            AIError::NetworkError(_) => self.retryable_errors.contains(&RetryableError::Network),
+            AIError::ParseError(_) => self.retryable_errors.contains(&RetryableError::ParseError),
+            _ => false,
+        }
+    }
+
+    fn get_delay(&self, attempt: u32) -> Duration {
+        let delay = self.initial_delay * 2u64.pow(attempt);
+        Duration::from_millis(delay.min(self.max_delay))
     }
 }
 
-async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
-    let mut retries = 0;
+async fn with_retries<T, F, Fut>(config: &RetryConfig, f: F) -> Result<T, AIError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, AIError>>,
+{
+    let mut attempt = 0;
     let mut last_error = None;
 
-    while retries < MAX_RETRIES {
-        match try_anthropic_request(query, config).await {
-            Ok(chain) => return Ok(chain),
+    while attempt < config.max_retries {
+        match f().await {
+            Ok(result) => return Ok(result),
             Err(e) => {
-                match e {
-                    AIError::RateLimitError(_) | AIError::NetworkError(_) => {
-                        let delay = INITIAL_RETRY_DELAY * 2u64.pow(retries);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        retries += 1;
-                        last_error = Some(e);
-                        continue;
-                    }
-                    _ => return Err(e),
+                if config.should_retry(&e) {
+                    let delay = config.get_delay(attempt);
+                    println!("Request failed: {}. Retrying in {:?}...", e, delay);
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
+                    last_error = Some(e);
+                    continue;
+                } else {
+                    return Err(e);
                 }
             }
         }
@@ -50,7 +94,18 @@ async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<Com
     Err(last_error.unwrap_or_else(|| AIError::NetworkError("Max retries exceeded".to_string())))
 }
 
-async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandChain, AIError> {
+pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
+    let retry_config = RetryConfig::new();
+
+    with_retries(&retry_config, || async {
+        match config.ai.provider {
+            AIProvider::Anthropic => get_anthropic_command_chain(query, config).await,
+            AIProvider::OpenAI => get_openai_command_chain(query, config).await,
+        }
+    }).await
+}
+
+async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
     let api_key = config.ai.anthropic_api_key.as_ref()
         .ok_or_else(|| AIError::ValidationError("Anthropic API key not configured".to_string()))?;
 
@@ -124,7 +179,10 @@ async fn try_anthropic_request(query: &str, config: &Config) -> Result<CommandCh
     }
 
     let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
-        .map_err(|e| AIError::ParseError(format!("Failed to parse Anthropic response: {} - Raw response: {}", e, response_text)))?;
+        .map_err(|e| AIError::ParseError(format!(
+            "Failed to parse Anthropic response: {} - Raw response: {}", 
+            e, response_text
+        )))?;
 
     let content = if !anthropic_response.content.is_empty() {
         &anthropic_response.content
@@ -199,31 +257,6 @@ pub fn extract_json(text: &str) -> Result<String, AIError> {
 }
 
 async fn get_openai_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
-    let mut retries = 0;
-    let mut last_error = None;
-
-    while retries < MAX_RETRIES {
-        match try_openai_request(query, config).await {
-            Ok(chain) => return Ok(chain),
-            Err(e) => {
-                match e {
-                    AIError::RateLimitError(_) | AIError::NetworkError(_) => {
-                        let delay = INITIAL_RETRY_DELAY * 2u64.pow(retries);
-                        tokio::time::sleep(Duration::from_millis(delay)).await;
-                        retries += 1;
-                        last_error = Some(e);
-                        continue;
-                    }
-                    _ => return Err(e),
-                }
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| AIError::NetworkError("Max retries exceeded".to_string())))
-}
-
-async fn try_openai_request(query: &str, config: &Config) -> Result<CommandChain, AIError> {
     let api_key = config.ai.openai_api_key.as_ref()
         .ok_or_else(|| AIError::ValidationError("OpenAI API key not configured".to_string()))?;
 
