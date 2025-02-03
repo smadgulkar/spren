@@ -69,7 +69,7 @@ async fn main() -> Result<()> {
 }
 
 async fn process_query(query: &str, config: &config::Config) -> Result<()> {
-    let intent = IntentAnalyzer::analyze(query).await?;
+    let intent = IntentAnalyzer::analyze(query, config).await?;
 
     match intent {
         Intent::CommandChain => {
@@ -206,61 +206,90 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
             let git_manager = GitManager::new(&current_dir)?;
 
             match git_intent.operation {
-                GitOp::Status | GitOp::Analyze => {
-                    let changes = git_manager.analyze_changes()?;
+                GitOp::Status => {
+                    let status = git_manager.get_status()?;
+                    println!("\n{}", "Repository Status:".blue().bold());
                     
-                    if changes.staged_modified.is_empty() && 
-                       changes.staged_added.is_empty() && 
-                       changes.staged_deleted.is_empty() && 
-                       changes.unstaged_modified.is_empty() && 
-                       changes.untracked.is_empty() {
-                        println!("No changes detected");
-                        return Ok(());
-                    }
-
-                    println!("\n{}", "Git Status:".blue().bold());
-                    
-                    if !changes.staged_modified.is_empty() {
+                    if !status.staged_modified.is_empty() {
                         println!("\n{}", "Modified (staged):".green());
-                        for file in changes.staged_modified {
+                        for file in status.staged_modified {
                             println!("  {}", file);
                         }
                     }
 
-                    if !changes.staged_added.is_empty() {
+                    if !status.staged_added.is_empty() {
                         println!("\n{}", "Added (staged):".green());
-                        for file in changes.staged_added {
+                        for file in status.staged_added {
                             println!("  {}", file);
                         }
                     }
 
-                    if !changes.staged_deleted.is_empty() {
+                    if !status.staged_deleted.is_empty() {
                         println!("\n{}", "Deleted (staged):".yellow());
-                        for file in changes.staged_deleted {
+                        for file in status.staged_deleted {
                             println!("  {}", file);
                         }
                     }
 
-                    if !changes.unstaged_modified.is_empty() {
+                    if !status.unstaged_modified.is_empty() {
                         println!("\n{}", "Modified (unstaged):".red());
-                        for file in changes.unstaged_modified {
+                        for file in status.unstaged_modified {
                             println!("  {}", file);
                         }
                     }
 
-                    if !changes.untracked.is_empty() {
+                    if !status.untracked.is_empty() {
                         println!("\n{}", "Untracked:".red().bold());
-                        for file in changes.untracked {
+                        for file in status.untracked {
                             println!("  {}", file);
                         }
                     }
                 },
                 GitOp::Branch => {
-                    let current_branch = git_manager.get_current_branch()?;
-                    println!("Current branch: {}", current_branch.green());
+                    println!("Current branch: {}", git_manager.get_current_branch()?.green());
                 },
                 GitOp::Commit => {
                     println!("Commit operation not implemented yet");
+                },
+                GitOp::ListBranches => {
+                    let branches = git_manager.list_branches()?;
+                    println!("\n{}", "Available branches:".blue().bold());
+                    for branch in branches {
+                        if branch == git_manager.get_current_branch()? {
+                            println!("* {}", branch.green());
+                        } else {
+                            println!("  {}", branch);
+                        }
+                    }
+                },
+                GitOp::SwitchBranch => {
+                    // Extract branch name from args
+                    if let Some(branch_name) = git_intent.args.iter()
+                        .skip_while(|&arg| !arg.contains("branch"))
+                        .nth(1) {
+                        git_manager.switch_branch(branch_name)?;
+                        println!("Switched to branch: {}", branch_name.green());
+                    } else {
+                        println!("Please specify a branch name");
+                    }
+                },
+                GitOp::CreateBranch => {
+                    // Extract branch name from args
+                    if let Some(branch_name) = git_intent.args.iter()
+                        .skip_while(|&arg| !arg.contains("branch"))
+                        .nth(1) {
+                        git_manager.create_branch(branch_name)?;
+                        println!("Created and switched to branch: {}", branch_name.green());
+                    } else {
+                        println!("Please specify a branch name");
+                    }
+                },
+                GitOp::ShowDiff => {
+                    // TODO: Implement diff viewing
+                    println!("Diff viewing not implemented yet");
+                },
+                GitOp::Analyze => {
+                    println!("Analysis operation not implemented yet");
                 },
             }
         }

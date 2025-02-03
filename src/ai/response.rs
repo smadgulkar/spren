@@ -3,15 +3,16 @@ use std::time::Duration;
 use validator::Validate;
 use super::error::AIError;
 use super::schema::{AIResponseSchema, CommandStepSchema, ResourceImpactSchema};
+use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Serialize)]
 pub struct CommandChain {
     pub steps: Vec<CommandStep>,
     pub total_impact: ResourceImpact,
     pub explanation: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Serialize)]
 pub struct CommandStep {
     pub command: String,
     pub explanation: String,
@@ -20,12 +21,13 @@ pub struct CommandStep {
     pub rollback_command: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Serialize, Debug)]
 pub struct ResourceImpact {
     pub cpu_usage: f32,
     pub memory_usage: f32,
     pub disk_usage: f32,
     pub network_usage: f32,
+    #[serde(skip)]
     pub estimated_duration: Duration,
 }
 
@@ -38,7 +40,6 @@ pub struct VersionedResponse {
 
 impl VersionedResponse {
     pub fn validate(&self) -> Result<(), AIError> {
-        // Version check
         if self.version != "1.0" {
             return Err(AIError::ValidationError(format!(
                 "Unsupported response version: {}. Expected 1.0",
@@ -46,7 +47,6 @@ impl VersionedResponse {
             )));
         }
 
-        // Schema validation
         self.response.validate().map_err(|e| AIError::ValidationError(
             format!("Response validation failed: {}", e)
         ))?;
@@ -106,5 +106,98 @@ impl ResourceImpact {
                     .sum()
             ),
         }
+    }
+}
+
+// Debug implementations
+impl fmt::Debug for CommandChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            writeln!(f, "CommandChain {{")?;
+            writeln!(f, "  explanation: {:?},", self.explanation)?;
+            writeln!(f, "  steps: [")?;
+            for step in &self.steps {
+                writeln!(f, "    {:?},", step)?;
+            }
+            writeln!(f, "  ],")?;
+            writeln!(f, "  total_impact: {:?}", self.total_impact)?;
+            write!(f, "}}")
+        } else {
+            f.debug_struct("CommandChain")
+                .field("explanation", &self.explanation)
+                .field("steps", &self.steps)
+                .field("total_impact", &self.total_impact)
+                .finish()
+        }
+    }
+}
+
+impl fmt::Debug for CommandStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            writeln!(f, "CommandStep {{")?;
+            writeln!(f, "  command: {:?},", self.command)?;
+            writeln!(f, "  explanation: {:?},", self.explanation)?;
+            writeln!(f, "  is_dangerous: {},", self.is_dangerous)?;
+            writeln!(f, "  impact: {:?},", self.impact)?;
+            writeln!(f, "  rollback: {:?}", self.rollback_command)?;
+            write!(f, "}}")
+        } else {
+            f.debug_struct("CommandStep")
+                .field("command", &self.command)
+                .field("explanation", &self.explanation)
+                .field("is_dangerous", &self.is_dangerous)
+                .field("impact", &self.impact)
+                .field("rollback", &self.rollback_command)
+                .finish()
+        }
+    }
+}
+
+impl fmt::Display for CommandChain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Command Chain:")?;
+        writeln!(f, "=============")?;
+        
+        writeln!(f, "\n{}\n", self.explanation)?;
+        
+        writeln!(f, "Steps:")?;
+        for (i, step) in self.steps.iter().enumerate() {
+            writeln!(f, "\n{}. {}", i + 1, step)?;
+        }
+
+        writeln!(f, "\nTotal Impact:")?;
+        write!(f, "{}", self.total_impact)
+    }
+}
+
+impl fmt::Display for CommandStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.explanation)?;
+        writeln!(f, "Command: {}", self.command)?;
+        
+        if self.is_dangerous {
+            writeln!(f, "⚠️  This command is potentially dangerous!")?;
+        }
+        
+        if let Some(rollback) = &self.rollback_command {
+            writeln!(f, "Rollback: {}", rollback)?;
+        }
+        
+        write!(f, "Impact: {}", self.impact)
+    }
+}
+
+impl fmt::Display for ResourceImpact {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "CPU: {:.1}%, Memory: {:.1}MB, Disk: {:.1}MB", 
+            self.cpu_usage,
+            self.memory_usage,
+            self.disk_usage
+        )?;
+        write!(f, "Network: {:.1}MB, Duration: {:.1}s",
+            self.network_usage,
+            self.estimated_duration.as_secs_f32()
+        )
     }
 } 

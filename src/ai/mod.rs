@@ -9,8 +9,8 @@ mod response;
 mod error;
 mod tests;
 
-pub use error::AIError;
-pub use response::{CommandChain, CommandStep};
+pub use self::response::{CommandChain, CommandStep, ResourceImpact};
+pub use self::error::AIError;
 use response::VersionedResponse;
 use crate::config::{Config, AIProvider};
 use crate::shell::ShellType;
@@ -99,13 +99,24 @@ pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandCh
 
     with_retries(&retry_config, || async {
         match config.ai.provider {
-            AIProvider::Anthropic => get_anthropic_command_chain(query, config).await,
+            AIProvider::Anthropic => {
+                let response = get_anthropic_response(query, config).await?;
+                // First try to parse as a command chain
+                if let Ok(command_chain) = serde_json::from_str::<VersionedResponse>(&response) {
+                    return command_chain.into_command_chain();
+                }
+                // If that fails, try to parse as a git operation
+                if let Ok(git_op) = serde_json::from_str::<GitOperationResponse>(&response) {
+                    return convert_git_op_to_command_chain(git_op);
+                }
+                Err(AIError::ParseError("Failed to parse response as either command chain or git operation".to_string()))
+            },
             AIProvider::OpenAI => get_openai_command_chain(query, config).await,
         }
     }).await
 }
 
-async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<CommandChain, AIError> {
+async fn get_anthropic_response(query: &str, config: &Config) -> Result<String, AIError> {
     let api_key = config.ai.anthropic_api_key.as_ref()
         .ok_or_else(|| AIError::ValidationError("Anthropic API key not configured".to_string()))?;
 
@@ -163,52 +174,50 @@ async fn get_anthropic_command_chain(query: &str, config: &Config) -> Result<Com
 
     println!("DEBUG: Raw AI response: {}", response_text);
 
-    #[derive(Debug, Deserialize)]
+    // Parse Anthropic response structure
+    #[derive(Deserialize)]
     struct AnthropicResponse {
-        #[serde(default)]
         content: Vec<AnthropicContent>,
-        #[serde(default)]
-        messages: Vec<AnthropicContent>,
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Deserialize)]
     struct AnthropicContent {
         text: String,
         #[serde(default)]
-        content: String,
+        r#type: String,
     }
 
-    let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)
-        .map_err(|e| AIError::ParseError(format!(
-            "Failed to parse Anthropic response: {} - Raw response: {}", 
-            e, response_text
-        )))?;
+    let anthropic_response: AnthropicResponse = serde_json::from_str(&response_text)?;
+    
+    // Extract JSON from markdown code block
+    if let Some(content) = anthropic_response.content.first() {
+        if let Some(json) = extract_json_from_markdown(&content.text) {
+            return Ok(json);
+        }
+    }
 
-    let content = if !anthropic_response.content.is_empty() {
-        &anthropic_response.content
-    } else {
-        &anthropic_response.messages
-    };
+    Err(AIError::ParseError("No valid JSON found in response".to_string()))
+}
 
-    let ai_response = content.last()
-        .ok_or_else(|| AIError::ParseError(format!("Empty response from Anthropic: {}", response_text)))?;
+fn extract_json_from_markdown(text: &str) -> Option<String> {
+    // Look for JSON between ```json and ``` markers
+    if let Some(start) = text.find("```json") {
+        if let Some(end) = text[start..].rfind("```") {  // Use rfind to find the last occurrence
+            let json_start = start + "```json".len();
+            let json_text = &text[json_start..start + end];  // Fix the slice range
+            return Some(json_text.trim().to_string());
+        }
+    }
 
-    let response_text = if !ai_response.text.is_empty() {
-        &ai_response.text
-    } else {
-        &ai_response.content
-    };
+    // Fallback: try to find just the JSON object
+    if let Some(start) = text.find('{') {
+        if let Some(end) = text[start..].rfind('}') {
+            let json_text = &text[start..=start + end];
+            return Some(json_text.trim().to_string());
+        }
+    }
 
-    // Find and validate JSON content
-    let json_text = extract_json(response_text)?;
-
-    let versioned_response: VersionedResponse = serde_json::from_str(&json_text)
-        .map_err(|e| AIError::ParseError(format!(
-            "Failed to parse command chain JSON: {} - Response text: {}", 
-            e, json_text
-        )))?;
-
-    versioned_response.into_command_chain()
+    None
 }
 
 pub fn extract_json(text: &str) -> Result<String, AIError> {
@@ -375,4 +384,122 @@ fn format_prompt(query: &str, shell_name: &str) -> String {
          Do not include any other text or explanations outside the JSON block.",
         shell_template, query, shell_name
     )
-} 
+}
+
+pub async fn get_ai_response(prompt: &str, config: &Config) -> Result<String, AIError> {
+    match config.ai.provider {
+        AIProvider::Anthropic => {
+            let raw_response = get_anthropic_response(&prompt.to_string(), config).await?;
+            
+            #[derive(Deserialize)]
+            struct IntentResponse {
+                intent: String,
+                details: serde_json::Value,
+            }
+
+            // Parse the response to check the intent
+            if let Ok(intent_response) = serde_json::from_str::<IntentResponse>(&raw_response) {
+                match intent_response.intent.as_str() {
+                    "CommandChain" => {
+                        let command_chain: VersionedResponse = serde_json::from_value(intent_response.details)?;
+                        let command_chain = command_chain.into_command_chain()?;
+                        let json_value = serde_json::json!({
+                            "version": "1.0",
+                            "steps": command_chain.steps,
+                            "explanation": command_chain.explanation,
+                            "total_impact": {
+                                "cpu_usage": command_chain.total_impact.cpu_usage,
+                                "memory_usage": command_chain.total_impact.memory_usage,
+                                "disk_usage": command_chain.total_impact.disk_usage,
+                                "network_usage": command_chain.total_impact.network_usage,
+                                "duration_seconds": command_chain.total_impact.estimated_duration.as_secs_f32(),
+                            }
+                        });
+                        return Ok(serde_json::to_string(&json_value)?);
+                    },
+                    "GitOperation" => {
+                        let git_op: GitOperationResponse = serde_json::from_value(intent_response.details)?;
+                        let command_chain = convert_git_op_to_command_chain(git_op)?;
+                        let json_value = serde_json::json!({
+                            "version": "1.0",
+                            "steps": command_chain.steps,
+                            "explanation": command_chain.explanation,
+                            "total_impact": {
+                                "cpu_usage": command_chain.total_impact.cpu_usage,
+                                "memory_usage": command_chain.total_impact.memory_usage,
+                                "disk_usage": command_chain.total_impact.disk_usage,
+                                "network_usage": command_chain.total_impact.network_usage,
+                                "duration_seconds": command_chain.total_impact.estimated_duration.as_secs_f32(),
+                            }
+                        });
+                        return Ok(serde_json::to_string(&json_value)?);
+                    },
+                    _ => return Err(AIError::ParseError(format!("Unknown intent: {}", intent_response.intent))),
+                }
+            }
+            
+            Err(AIError::ParseError("Failed to parse response".to_string()))
+        },
+        AIProvider::OpenAI => {
+            let command_chain = get_openai_command_chain(&prompt.to_string(), config).await?;
+            let json_value = serde_json::json!({
+                "version": "1.0",
+                "steps": command_chain.steps,
+                "explanation": command_chain.explanation,
+                "total_impact": {
+                    "cpu_usage": command_chain.total_impact.cpu_usage,
+                    "memory_usage": command_chain.total_impact.memory_usage,
+                    "disk_usage": command_chain.total_impact.disk_usage,
+                    "network_usage": command_chain.total_impact.network_usage,
+                    "duration_seconds": command_chain.total_impact.estimated_duration.as_secs_f32(),
+                }
+            });
+            Ok(serde_json::to_string(&json_value)?)
+        },
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GitOperationResponse {
+    intent: String,
+    details: GitOperationDetails,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitOperationDetails {
+    operation: String,
+    args: Vec<String>,
+    description: String,
+}
+
+fn convert_git_op_to_command_chain(git_op: GitOperationResponse) -> Result<CommandChain, AIError> {
+    let command = match git_op.details.operation.as_str() {
+        "branch" => "git branch".to_string(),
+        "status" => "git status".to_string(),
+        // Add other git operations as needed
+        _ => return Err(AIError::ParseError(format!("Unknown git operation: {}", git_op.details.operation))),
+    };
+
+    let step = CommandStep {
+        command,
+        explanation: git_op.details.description.clone(),
+        is_dangerous: false,
+        impact: ResourceImpact {
+            cpu_usage: 0.1,
+            memory_usage: 1.0,
+            disk_usage: 0.0,
+            network_usage: 0.0,
+            estimated_duration: Duration::from_secs_f32(0.1),
+        },
+        rollback_command: None,
+    };
+
+    Ok(CommandChain {
+        steps: vec![step.clone()],  // Clone step here
+        total_impact: ResourceImpact::calculate_total(&[step]),
+        explanation: format!("Git operation: {}", git_op.details.description),
+    })
+}
+
+// Re-export theme for use in response.rs
+// pub(crate) use crate::theme; 

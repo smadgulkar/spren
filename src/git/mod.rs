@@ -29,36 +29,80 @@ impl GitManager {
         }
     }
 
-    pub fn analyze_changes(&self) -> Result<GitChanges> {
-        // Get staged and unstaged changes
-        let status = Command::new("git")
+    pub fn get_status(&self) -> Result<GitChanges> {
+        let output = Command::new("git")
             .args(["status", "--porcelain"])
             .current_dir(&self.repo_path)
             .output()?;
 
-        if !status.status.success() {
+        if !output.status.success() {
             return Err(anyhow::anyhow!("Failed to get git status"));
         }
 
-        let status_output = String::from_utf8_lossy(&status.stdout);
         let mut changes = GitChanges::default();
-
-        for line in status_output.lines() {
-            if line.len() < 3 { continue; }
-            let (index, working_tree) = line.split_at(2);
-            let file = working_tree.trim();
+        
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if line.len() < 3 {
+                continue;
+            }
             
-            match (index.chars().next(), index.chars().nth(1)) {
-                (Some('M'), _) => changes.staged_modified.push(file.to_string()),
-                (Some('A'), _) => changes.staged_added.push(file.to_string()),
-                (Some('D'), _) => changes.staged_deleted.push(file.to_string()),
-                (_, Some('M')) => changes.unstaged_modified.push(file.to_string()),
-                (_, Some('?')) => changes.untracked.push(file.to_string()),
-                _ => {}
+            let status = &line[0..2];
+            let file = line[3..].to_string();
+            
+            match status {
+                "M " => changes.staged_modified.push(file),
+                " M" => changes.unstaged_modified.push(file),
+                "A " => changes.staged_added.push(file),
+                "D " => changes.staged_deleted.push(file),
+                "??" => changes.untracked.push(file),
+                _ => (),
             }
         }
 
         Ok(changes)
+    }
+
+    pub fn list_branches(&self) -> Result<Vec<String>> {
+        let output = Command::new("git")
+            .args(["branch", "--list"])
+            .current_dir(&self.repo_path)
+            .output()?;
+
+        if output.status.success() {
+            let branches = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|line| line.trim_start_matches('*').trim().to_string())
+                .collect();
+            Ok(branches)
+        } else {
+            Err(anyhow::anyhow!("Failed to list branches"))
+        }
+    }
+
+    pub fn switch_branch(&self, branch_name: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["checkout", branch_name])
+            .current_dir(&self.repo_path)
+            .output()?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Failed to switch branch"))
+        }
+    }
+
+    pub fn create_branch(&self, branch_name: &str) -> Result<()> {
+        let output = Command::new("git")
+            .args(["checkout", "-b", branch_name])
+            .current_dir(&self.repo_path)
+            .output()?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Failed to create branch"))
+        }
     }
 }
 

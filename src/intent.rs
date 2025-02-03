@@ -1,5 +1,7 @@
 use anyhow::Result;
 use crate::code::Language;
+use crate::config::Config;
+use std::str::FromStr;
 
 #[derive(Debug, PartialEq)]
 pub enum Intent {
@@ -20,6 +22,7 @@ pub struct CodeGenIntent {
 pub struct GitIntent {
     pub operation: GitOp,
     pub args: Vec<String>,
+    pub description: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -28,49 +31,84 @@ pub enum GitOp {
     Branch,
     Commit,
     Analyze,
+    ListBranches,
+    CreateBranch,
+    SwitchBranch,
+    ShowDiff,
 }
 
 pub struct IntentAnalyzer;
 
 impl IntentAnalyzer {
-    pub async fn analyze(query: &str) -> Result<Intent> {
-        let query = query.to_lowercase();
+    pub async fn analyze(query: &str, config: &Config) -> Result<Intent> {
+        // Use AI to determine intent and extract details
+        let prompt = format!(
+            "Analyze this command and return a JSON response classifying the intent and details:\n\
+             Query: {}\n\
+             \n\
+             Return one of these intents:\n\
+             1. CommandChain - for shell commands\n\
+             2. GitOperation - for git related operations\n\
+             3. CodeGeneration - for creating/modifying code\n\
+             \n\
+             Example response format:\n\
+             ```json\n\
+             {{\n\
+                \"intent\": \"GitOperation\",\n\
+                \"details\": {{\n\
+                    \"operation\": \"branch\",\n\
+                    \"args\": [\"feature/auth\"],\n\
+                    \"description\": \"Create new feature branch for authentication\"\n\
+                }}\n\
+             }}\n\
+             ```",
+            query
+        );
+
+        let response = crate::ai::get_ai_response(&prompt, config).await?;
         
-        if query.contains("git") || query.contains("commit") || query.contains("branch") {
-            let operation = if query.contains("status") || query.contains("changes") {
-                GitOp::Status
-            } else if query.contains("branch") {
-                GitOp::Branch
-            } else if query.contains("commit") {
-                GitOp::Commit
-            } else {
-                GitOp::Analyze
-            };
+        // Parse AI response and convert to Intent enum
+        let parsed: serde_json::Value = serde_json::from_str(&response)?;
+        
+        match parsed["intent"].as_str() {
+            Some("GitOperation") => {
+                let details = &parsed["details"];
+                let operation = match details["operation"].as_str() {
+                    Some("status") => GitOp::Status,
+                    Some("branch") => GitOp::Branch,
+                    Some("commit") => GitOp::Commit,
+                    Some("list_branches") => GitOp::ListBranches,
+                    Some("create_branch") => GitOp::CreateBranch,
+                    Some("switch_branch") => GitOp::SwitchBranch,
+                    Some("show_diff") => GitOp::ShowDiff,
+                    _ => GitOp::Analyze,
+                };
 
-            Ok(Intent::GitOperation(GitIntent {
-                operation,
-                args: query.split_whitespace().map(String::from).collect(),
-            }))
-        } else if query.contains("generate") || query.contains("create file") || query.contains("new file") {
-            let language = if query.contains("rust") {
-                Language::Rust
-            } else if query.contains("python") {
-                Language::Python
-            } else if query.contains("typescript") || query.contains("tsx") {
-                Language::TypeScript
-            } else if query.contains("javascript") || query.contains("jsx") {
-                Language::JavaScript
-            } else {
-                Language::Unknown
-            };
-
-            Ok(Intent::CodeGeneration(CodeGenIntent {
-                language,
-                description: query,
-                path: None,
-            }))
-        } else {
-            Ok(Intent::CommandChain)
+                Ok(Intent::GitOperation(GitIntent {
+                    operation,
+                    args: details["args"].as_array()
+                        .map(|arr| arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(String::from)
+                            .collect())
+                        .unwrap_or_default(),
+                    description: details["description"].as_str()
+                        .unwrap_or("").to_string(),
+                }))
+            },
+            Some("CodeGeneration") => {
+                let details = &parsed["details"];
+                Ok(Intent::CodeGeneration(CodeGenIntent {
+                    language: Language::from_str(
+                        details["language"].as_str().unwrap_or("unknown")
+                    ).unwrap_or(Language::Unknown),
+                    description: details["description"].as_str()
+                        .unwrap_or("").to_string(),
+                    path: details["path"].as_str()
+                        .map(String::from),
+                }))
+            },
+            _ => Ok(Intent::CommandChain),
         }
     }
 } 

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 pub struct CodeGenerator {
     project_root: PathBuf,
@@ -15,6 +16,20 @@ pub enum Language {
     TypeScript,
     Unknown,
     // Add more as needed
+}
+
+impl FromStr for Language {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "rust" => Ok(Language::Rust),
+            "python" => Ok(Language::Python),
+            "javascript" | "js" => Ok(Language::JavaScript),
+            "typescript" | "ts" => Ok(Language::TypeScript),
+            _ => Ok(Language::Unknown),
+        }
+    }
 }
 
 impl CodeGenerator {
