@@ -6,6 +6,8 @@ pub enum AIError {
     AuthenticationError(String),
     RateLimitError(String),
     APIError(String),
+    ResponseParseError(String),
+    UnknownError(String),
 }
 
 impl std::fmt::Display for AIError {
@@ -17,8 +19,10 @@ impl std::fmt::Display for AIError {
             Self::AuthenticationError(msg) => write!(f, "Authentication Error: {}. Please check your API key in the config file.", msg),
             Self::RateLimitError(msg) => write!(f, "Rate Limit Error: {}. Please wait a moment and try again.", msg),
             Self::APIError(msg) => write!(f, "API Error: {}. Please try again or check your request.", msg),
+            Self::ResponseParseError(msg) => write!(f, "Response parse error: {}", msg),
+            Self::UnknownError(msg) => write!(f, "Unknown error: {}", msg),
         }
     }
 }
 
-impl std::error::Error for AIError {} 
+impl std::error::Error for AIError {}

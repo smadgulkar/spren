@@ -1,12 +1,12 @@
 // src/shell.rs
 use std::env;
-use which::which;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub enum ShellType {
-    Powershell,
-    Cmd,
     Bash,
+    Cmd,
+    PowerShell,
     Other(String),
 }
 
@@ -30,12 +30,12 @@ impl ShellType {
         // On Windows, check if powershell is available
         #[cfg(windows)]
         {
-            if let Ok(parent) = env::var("PSModulePath") {
-                return ShellType::Powershell;
+            if let Ok(_) = env::var("PSModulePath") {
+                return ShellType::PowerShell;
             }
             // Additional Windows-specific check
             if which("powershell.exe").is_ok() {
-                return ShellType::Powershell;
+                return ShellType::PowerShell;
             }
         }
 
@@ -52,7 +52,7 @@ impl ShellType {
 
     pub fn get_shell_name(&self) -> &str {
         match self {
-            ShellType::Powershell => "PowerShell",
+            ShellType::PowerShell => "PowerShell",
             ShellType::Cmd => "CMD",
             ShellType::Bash => "Bash",
             ShellType::Other(name) => name,
@@ -62,7 +62,7 @@ impl ShellType {
     pub fn get_shell_command(&self) -> (&str, &[&str]) {
         match self {
             ShellType::Bash => ("sh", &["-c"]),
-            ShellType::Powershell => ("powershell", &["-NoProfile", "-NonInteractive", "-Command"]),
+            ShellType::PowerShell => ("powershell", &["-NoProfile", "-NonInteractive", "-Command"]),
             ShellType::Cmd => ("cmd", &["/C"]),
             ShellType::Other(_) => ("sh", &["-c"]), // Default to sh for unknown shells
         }
@@ -71,14 +71,14 @@ impl ShellType {
     pub fn format_command(&self, command: &str) -> String {
         match self {
             ShellType::Bash => command.to_string(),
-            ShellType::Powershell => {
+            ShellType::PowerShell => {
                 // PowerShell commands don't need single quote wrapping when using -Command
                 command.to_string()
-            },
+            }
             ShellType::Cmd => {
                 // Escape special characters for CMD
                 command.replace("\"", "\\\"")
-            },
+            }
             ShellType::Other(_) => command.to_string(), // Default to no formatting for unknown shells
         }
     }

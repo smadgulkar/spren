@@ -1,14 +1,18 @@
+use super::error::AIError;
+use super::path_utils::{convert_mkdir_command, sanitize_windows_path};
+use super::schema::{AIResponseSchema, CommandStepSchema, ResourceImpactSchema};
+use crate::platform::PlatformCommand;
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use validator::Validate;
-use super::error::AIError;
-use super::schema::{AIResponseSchema, CommandStepSchema, ResourceImpactSchema};
 
 #[derive(Debug, Clone)]
 pub struct CommandChain {
     pub steps: Vec<CommandStep>,
     pub total_impact: ResourceImpact,
     pub explanation: String,
+    pub raw_response: String,
 }
 
 #[derive(Debug, Clone)]
@@ -31,9 +35,9 @@ pub struct ResourceImpact {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VersionedResponse {
-    version: String,
+    pub version: String,
     #[serde(flatten)]
-    response: AIResponseSchema,
+    pub response: AIResponseSchema,
 }
 
 impl VersionedResponse {
@@ -47,9 +51,9 @@ impl VersionedResponse {
         }
 
         // Schema validation
-        self.response.validate().map_err(|e| AIError::ValidationError(
-            format!("Response validation failed: {}", e)
-        ))?;
+        self.response
+            .validate()
+            .map_err(|e| AIError::ValidationError(format!("Response validation failed: {}", e)))?;
 
         Ok(())
     }
@@ -57,7 +61,10 @@ impl VersionedResponse {
     pub fn into_command_chain(self) -> Result<CommandChain, AIError> {
         self.validate()?;
 
-        let steps = self.response.steps.into_iter()
+        let steps = self
+            .response
+            .steps
+            .into_iter()
             .map(CommandStep::from_schema)
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -67,19 +74,40 @@ impl VersionedResponse {
             steps,
             total_impact,
             explanation: self.response.explanation,
+            raw_response: self.response.raw_response,
         })
     }
 }
 
 impl CommandStep {
     pub fn from_schema(schema: CommandStepSchema) -> Result<Self, AIError> {
+        let command = if cfg!(windows) {
+            let sanitized = sanitize_windows_path(&schema.command);
+            convert_mkdir_command(&sanitized)
+        } else {
+            schema.command
+        };
+
         Ok(Self {
-            command: schema.command,
+            command,
             explanation: schema.explanation,
             is_dangerous: schema.is_dangerous,
             impact: ResourceImpact::from_schema(schema.estimated_impact)?,
-            rollback_command: schema.rollback_command,
+            rollback_command: schema.rollback_command.map(|cmd| {
+                if cfg!(windows) {
+                    let sanitized = sanitize_windows_path(&cmd);
+                    convert_mkdir_command(&sanitized)
+                } else {
+                    cmd
+                }
+            }),
         })
+    }
+
+    pub fn execute(&self) -> Result<String, anyhow::Error> {
+        let platform_cmd = PlatformCommand::from_shell_command(&self.command)
+            .ok_or_else(|| anyhow!("Invalid command: {}", self.command))?;
+        platform_cmd.execute()
     }
 }
 
@@ -101,10 +129,27 @@ impl ResourceImpact {
             disk_usage: steps.iter().map(|s| s.impact.disk_usage).sum(),
             network_usage: steps.iter().map(|s| s.impact.network_usage).sum(),
             estimated_duration: Duration::from_secs_f32(
-                steps.iter()
+                steps
+                    .iter()
                     .map(|s| s.impact.estimated_duration.as_secs_f32())
-                    .sum()
+                    .sum(),
             ),
         }
     }
-} 
+}
+
+impl CommandChain {
+    pub fn new(
+        steps: Vec<CommandStep>,
+        total_impact: ResourceImpact,
+        explanation: String,
+        raw_response: String,
+    ) -> Self {
+        Self {
+            steps,
+            total_impact,
+            explanation,
+            raw_response,
+        }
+    }
+}

@@ -5,13 +5,15 @@ use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use colored::*;
 use std::io::{self, Write};
-use std::time::{Duration, Instant};
+use std::time::Instant;
+use tracing::{debug, error, info};
 
 mod ai;
 mod analysis;
 mod config;
 mod executor;
 mod intent;
+mod platform;
 mod shell;
 
 use intent::{Intent, IntentAnalyzer};
@@ -36,59 +38,62 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let _cli = Cli::parse();
+    let config_path = config::get_config_path()?;
 
-    match &cli.command {
-        Some(Commands::Analyze { path }) => {
-            println!("Analyzing project at: {}", path);
-            let analyzer = ProjectAnalyzer::new(path);
-            let config = config::Config::load(&config::get_config_path()?)?;
-            let analysis = analyzer.analyze_with_llm(&config).await?;
+    // Migrate or create config
+    if !config_path.exists() {
+        config::Config::create_default(&config_path)?;
+        println!("Created default config file at {:?}", config_path);
+        println!("Please update the API key in the config file and restart.");
+        println!("Note: The 'provider' value must be lowercase 'anthropic' or 'openai'");
+        return Ok(());
+    } else {
+        config::Config::migrate_config(&config_path)?;
+    }
 
-            print_analysis_results(&analysis);
+    let config = config::Config::load(&config_path)?;
+    let shell_type = shell::ShellType::detect();
+
+    println!("{}", "Spren - Your AI Shell Assistant".green().bold());
+    println!("Shell Type: {}", format!("{:?}", shell_type).blue());
+    println!("Type 'exit' to quit\n");
+
+    loop {
+        print!("spren> ");
+        io::stdout().flush()?;
+
+        let mut query = String::new();
+        io::stdin().read_line(&mut query)?;
+        let query = query.trim();
+
+        if query == "exit" {
+            break;
         }
-        None => {
-            // Interactive mode
-            let config_path = config::get_config_path()?;
-            if !config_path.exists() {
-                config::Config::create_default(&config_path)?;
-                println!("Created default config file at {:?}", config_path);
-                println!("Please update the API key in the config file and restart.");
-                return Ok(());
-            }
 
-            let config = config::Config::load(&config_path)?;
-            let shell_type = shell::ShellType::detect();
+        // Check if it's an analyze command
+        if query.starts_with("analyze ") {
+            let path = query.trim_start_matches("analyze ").trim();
+            let analyzer = ProjectAnalyzer::new(path);
+            let analysis = analyzer.analyze_with_llm(&config).await?;
+            print_analysis_results(&analysis);
+            continue;
+        }
 
-            println!("{}", "Spren - Your AI Shell Assistant".green().bold());
-            println!("Shell Type: {}", format!("{:?}", shell_type).blue());
-            println!("Type 'exit' to quit\n");
-
-            loop {
-                print!("spren> ");
-                io::stdout().flush()?;
-
-                let mut query = String::new();
-                io::stdin().read_line(&mut query)?;
-                let query = query.trim();
-
-                if query == "exit" {
-                    break;
-                }
-
-                // Check if it's an analyze command
-                if query.starts_with("analyze ") {
-                    let path = query.trim_start_matches("analyze ").trim();
-                    let analyzer = ProjectAnalyzer::new(path);
-                    let analysis = analyzer.analyze_with_llm(&config).await?;
-                    print_analysis_results(&analysis);
-                    continue;
-                }
-
-                match process_query(query, &config).await {
-                    Ok(_) => continue,
-                    Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
-                }
+        match process_query(query, &config).await {
+            Ok(_) => continue,
+            Err(e) => {
+                eprintln!(
+                    "{}: {}",
+                    "Error".red().bold(),
+                    if e.downcast_ref::<AIError>()
+                        .map_or(false, |ae| matches!(ae, AIError::ResponseParseError(_)))
+                    {
+                        "The AI assistant failed to generate a valid response. Please try rephrasing your request.".to_string()
+                    } else {
+                        e.to_string()
+                    }
+                );
             }
         }
     }
@@ -101,28 +106,30 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
 
     match intent {
         Intent::CommandChain => {
+            debug!("Sending request to AI: {}", query);
+
             let chain = match ai::get_command_chain(query, &config).await {
-                Ok(chain) => chain,
-                Err(e) => match e {
-                    AIError::RateLimitError(msg) => {
-                        println!("{}: {}. Retrying...", "Rate limit".yellow().bold(), msg);
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-                        ai::get_command_chain(query, &config)
-                            .await
-                            .map_err(|e| anyhow!(e.to_string()))?
+                Ok(chain) => {
+                    debug!("AI Response received successfully");
+                    if config.debug.show_raw_response {
+                        println!("\n{}", "Raw AI Response:".blue().bold());
+                        println!("{}", chain.raw_response);
                     }
-                    AIError::NetworkError(msg) => {
-                        println!("{}: {}. Retrying...", "Network error".yellow().bold(), msg);
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        ai::get_command_chain(query, &config)
-                            .await
-                            .map_err(|e| anyhow!(e.to_string()))?
+                    chain
+                }
+                Err(e) => {
+                    error!("AI request failed: {}", e);
+                    error!("Query: {}", query);
+                    if let AIError::ResponseParseError(raw) = &e {
+                        error!("Raw response: {}", raw);
+                        eprintln!("{}: {}", "Error".red().bold(), e);
+                        return Ok(());
                     }
-                    _ => return Err(anyhow!(e.to_string())),
-                },
+                    return Err(anyhow!(e));
+                }
             };
 
-            let mut executor = ChainExecutor::new(chain);
+            let mut executor = ChainExecutor::new(chain)?;
 
             // Show preview
             println!("\n{}", "Command Chain Preview:".blue().bold());
@@ -138,10 +145,10 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
 
                 match response.as_str() {
                     "y" => {
-                        // Execute all steps
                         let start_time = Instant::now();
                         match executor.execute_all().await {
                             Ok(outputs) => {
+                                info!("Command chain completed successfully");
                                 println!("\n{}", "✓ Command chain completed successfully".green());
                                 if config.display.show_execution_time {
                                     println!("Total execution time: {:?}", start_time.elapsed());
@@ -150,22 +157,32 @@ async fn process_query(query: &str, config: &config::Config) -> Result<()> {
                                     if !output.stdout.is_empty() {
                                         println!("{}", output.stdout);
                                     }
-                                    if !output.stderr.is_empty() {
-                                        println!("{}: {}", "Note".yellow().bold(), output.stderr);
-                                    }
                                 }
                             }
                             Err(e) => {
-                                println!("\n{}: {}", "Chain execution failed".red().bold(), e);
-                                println!("\nWould you like to rollback the changes? [y/N] ");
+                                error!("Chain execution failed: {}", e);
+                                if let Some(step) = executor.current_step_details() {
+                                    error!(
+                                        "Failed at step {}: {}",
+                                        executor.current_step() + 1,
+                                        step.command
+                                    );
+                                }
+                                eprintln!("\n{}: {}", "Chain execution failed".red().bold(), e);
+                                print!("\nWould you like to rollback the changes? [y/N] ");
                                 io::stdout().flush()?;
-
-                                let mut rollback = String::new();
-                                io::stdin().read_line(&mut rollback)?;
-                                if rollback.trim().to_lowercase() == "y" {
+                                let mut response = String::new();
+                                io::stdin().read_line(&mut response)?;
+                                if response.trim().to_lowercase() == "y" {
                                     match executor.rollback().await {
-                                        Ok(_) => println!("✓ Successfully rolled back changes"),
-                                        Err(e) => println!("Failed to rollback: {}", e),
+                                        Ok(_) => {
+                                            info!("Rollback completed successfully");
+                                            println!("Rollback completed successfully");
+                                        }
+                                        Err(e) => {
+                                            error!("Rollback failed: {}", e);
+                                            eprintln!("Rollback failed: {}", e);
+                                        }
                                     }
                                 }
                             }

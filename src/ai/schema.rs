@@ -8,6 +8,8 @@ pub struct AIResponseSchema {
     pub steps: Vec<CommandStepSchema>,
     #[validate(length(min = 1, message = "Explanation cannot be empty"))]
     pub explanation: String,
+    #[serde(default)]
+    pub raw_response: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Validate)]
@@ -23,7 +25,11 @@ pub struct CommandStepSchema {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Validate)]
 pub struct ResourceImpactSchema {
-    #[validate(range(min = 0.0, max = 100.0, message = "CPU percentage must be between 0 and 100"))]
+    #[validate(range(
+        min = 0.0,
+        max = 100.0,
+        message = "CPU percentage must be between 0 and 100"
+    ))]
     pub cpu_percentage: f32,
     #[validate(range(min = 0.0, message = "Memory usage cannot be negative"))]
     pub memory_mb: f32,
@@ -33,4 +39,4 @@ pub struct ResourceImpactSchema {
     pub network_mb: f32,
     #[validate(range(min = 0.0, message = "Duration cannot be negative"))]
     pub duration_seconds: f32,
-} 
+}

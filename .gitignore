@@ -4,3 +4,8 @@ Cargo.lock
 .env
 .DS_Store
 /config.toml
+.env
+*.py
+*.bat
+*.sh
+*.ps1

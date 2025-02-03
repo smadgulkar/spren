@@ -1,17 +1,28 @@
 pub mod chain;
 
 use anyhow::Result;
+use std::env;
 use std::process::Command;
 
+#[derive(Debug)]
 pub struct CommandOutput {
     pub stdout: String,
     pub stderr: String,
-    pub success: bool,
 }
 
 pub async fn execute_command(command: &str) -> Result<CommandOutput> {
     let shell_type = crate::shell::ShellType::detect();
     let (shell, args) = shell_type.get_shell_command();
+
+    // Handle cd commands specially
+    if command.trim().starts_with("cd ") {
+        let path = command.trim()[3..].trim();
+        env::set_current_dir(path)?;
+        return Ok(CommandOutput {
+            stdout: format!("Changed directory to {}", path),
+            stderr: String::new(),
+        });
+    }
 
     let formatted_command = shell_type.format_command(command);
 
@@ -31,14 +42,13 @@ pub async fn execute_command(command: &str) -> Result<CommandOutput> {
         .join("\n");
 
     // Note: PowerShell and CMD might write to stderr even on success
-    let success = match shell_type {
+    let _success = match shell_type {
         crate::shell::ShellType::Bash => output.status.success() && stderr.is_empty(),
-        _ => output.status.success()
+        _ => output.status.success(),
     };
 
     Ok(CommandOutput {
         stdout: stdout.trim().to_string(),
         stderr: stderr.trim().to_string(),
-        success
     })
-} 
+}
