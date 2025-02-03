@@ -72,21 +72,26 @@ impl ShellType {
         match self {
             ShellType::Cmd => {
                 let command = command.trim();
-                
+
                 // Handle cd commands
                 if command.to_lowercase().starts_with("cd ") {
                     let path = command[3..].trim();
-                    let clean_path = path.trim_matches('"')
+                    let clean_path = path
+                        .trim_matches('"')
                         .replace("/", "\\")
                         .replace("\\\\", "\\");
                     return format!("cd /d \"{}\"", clean_path);
                 }
-                
+
                 // Handle other commands
-                command.replace("/", "\\")
-                      .replace("\\\\", "\\")
-            },
+                command.replace("/", "\\").replace("\\\\", "\\")
+            }
             _ => command.to_string(),
         }
+    }
+
+    pub fn get_system_command(&self, command: &str) -> String {
+        // Just return the command as-is, let the LLM handle shell-specific commands
+        command.to_string()
     }
 }

@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
-use validator::Validate;
 use super::error::AIError;
 use super::schema::{AIResponseSchema, CommandStepSchema, ResourceImpactSchema};
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::time::Duration;
+use validator::Validate;
 
 #[derive(Clone, Serialize)]
 pub struct CommandChain {
@@ -21,14 +21,26 @@ pub struct CommandStep {
     pub rollback_command: Option<String>,
 }
 
-#[derive(Clone, Serialize, Debug)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ResourceImpact {
     pub cpu_usage: f32,
     pub memory_usage: f32,
     pub disk_usage: f32,
     pub network_usage: f32,
-    #[serde(skip)]
+    #[serde(skip)] // Skip duration during serialization
     pub estimated_duration: Duration,
+}
+
+impl Default for ResourceImpact {
+    fn default() -> Self {
+        Self {
+            cpu_usage: 0.0,
+            memory_usage: 0.0,
+            disk_usage: 0.0,
+            network_usage: 0.0,
+            estimated_duration: Duration::from_secs(0),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,9 +59,9 @@ impl VersionedResponse {
             )));
         }
 
-        self.response.validate().map_err(|e| AIError::ValidationError(
-            format!("Response validation failed: {}", e)
-        ))?;
+        self.response
+            .validate()
+            .map_err(|e| AIError::ValidationError(format!("Response validation failed: {}", e)))?;
 
         Ok(())
     }
@@ -57,7 +69,10 @@ impl VersionedResponse {
     pub fn into_command_chain(self) -> Result<CommandChain, AIError> {
         self.validate()?;
 
-        let steps = self.response.steps.into_iter()
+        let steps = self
+            .response
+            .steps
+            .into_iter()
             .map(CommandStep::from_schema)
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -101,9 +116,10 @@ impl ResourceImpact {
             disk_usage: steps.iter().map(|s| s.impact.disk_usage).sum(),
             network_usage: steps.iter().map(|s| s.impact.network_usage).sum(),
             estimated_duration: Duration::from_secs_f32(
-                steps.iter()
+                steps
+                    .iter()
                     .map(|s| s.impact.estimated_duration.as_secs_f32())
-                    .sum()
+                    .sum(),
             ),
         }
     }
@@ -158,9 +174,9 @@ impl fmt::Display for CommandChain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Command Chain:")?;
         writeln!(f, "=============")?;
-        
+
         writeln!(f, "\n{}\n", self.explanation)?;
-        
+
         writeln!(f, "Steps:")?;
         for (i, step) in self.steps.iter().enumerate() {
             writeln!(f, "\n{}. {}", i + 1, step)?;
@@ -175,29 +191,31 @@ impl fmt::Display for CommandStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "{}", self.explanation)?;
         writeln!(f, "Command: {}", self.command)?;
-        
+
         if self.is_dangerous {
             writeln!(f, "⚠️  This command is potentially dangerous!")?;
         }
-        
+
         if let Some(rollback) = &self.rollback_command {
             writeln!(f, "Rollback: {}", rollback)?;
         }
-        
+
         write!(f, "Impact: {}", self.impact)
     }
 }
 
 impl fmt::Display for ResourceImpact {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "CPU: {:.1}%, Memory: {:.1}MB, Disk: {:.1}MB", 
-            self.cpu_usage,
-            self.memory_usage,
-            self.disk_usage
+        writeln!(
+            f,
+            "CPU: {:.1}%, Memory: {:.1}MB, Disk: {:.1}MB",
+            self.cpu_usage, self.memory_usage, self.disk_usage
         )?;
-        write!(f, "Network: {:.1}MB, Duration: {:.1}s",
+        write!(
+            f,
+            "Network: {:.1}MB, Duration: {:.1}s",
             self.network_usage,
             self.estimated_duration.as_secs_f32()
         )
     }
-} 
+}

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -8,7 +9,8 @@ pub struct CodeGenerator {
     language: Language,
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Language {
     Rust,
     Python,
@@ -19,7 +21,7 @@ pub enum Language {
 }
 
 impl FromStr for Language {
-    type Err = String;
+    type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
@@ -36,9 +38,15 @@ impl CodeGenerator {
     pub fn new(project_root: impl AsRef<Path>, language: Language) -> Result<Self> {
         let project_root = project_root.as_ref().to_path_buf();
         if !project_root.exists() {
-            return Err(anyhow::anyhow!("Project root does not exist: {:?}", project_root));
+            return Err(anyhow::anyhow!(
+                "Project root does not exist: {:?}",
+                project_root
+            ));
         }
-        Ok(Self { project_root, language })
+        Ok(Self {
+            project_root,
+            language,
+        })
     }
 
     pub fn analyze_project(&self) -> Result<ProjectStructure> {
@@ -51,16 +59,20 @@ impl CodeGenerator {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if path.is_dir() {
                 if !should_ignore(&path) {
-                    structure.directories.push(path.to_string_lossy().into_owned());
+                    structure
+                        .directories
+                        .push(path.to_string_lossy().into_owned());
                     self.scan_directory(&path, structure)?;
                 }
             } else if path.is_file() {
                 if let Some(ext) = path.extension() {
                     if is_source_file(ext) {
-                        structure.source_files.push(path.to_string_lossy().into_owned());
+                        structure
+                            .source_files
+                            .push(path.to_string_lossy().into_owned());
                     }
                 }
             }
@@ -98,20 +110,18 @@ pub struct ProjectStructure {
 }
 
 fn should_ignore(path: &Path) -> bool {
-    let name = path.file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
-    
-    matches!(name, 
-        "target" | "node_modules" | ".git" | 
-        "dist" | "build" | ".idea" | ".vscode"
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    matches!(
+        name,
+        "target" | "node_modules" | ".git" | "dist" | "build" | ".idea" | ".vscode"
     )
 }
 
 fn is_source_file(ext: &std::ffi::OsStr) -> bool {
-    matches!(ext.to_str().unwrap_or(""),
-        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" |
-        "java" | "cpp" | "c" | "h" | "hpp"
+    matches!(
+        ext.to_str().unwrap_or(""),
+        "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "java" | "cpp" | "c" | "h" | "hpp"
     )
 }
 
@@ -135,4 +145,4 @@ impl Language {
             Language::Unknown => "txt",
         }
     }
-} 
+}
