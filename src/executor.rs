@@ -1,11 +1,12 @@
 // src/executor.rs
+use crate::shell::ShellType;
 use anyhow::Result;
 use std::process::Command;
-use crate::shell::ShellType;
 
 pub struct CommandOutput {
     pub stdout: String,
     pub stderr: String,
+    #[allow(dead_code)]
     pub success: bool,
 }
 
@@ -29,8 +30,8 @@ pub async fn execute_command(command: &str) -> Result<CommandOutput> {
                  }}",
                 command
             )
-        },
-        _ => shell_type.format_command(command)
+        }
+        _ => shell_type.format_command(command),
     };
 
     let mut cmd = Command::new(shell);
@@ -51,12 +52,12 @@ pub async fn execute_command(command: &str) -> Result<CommandOutput> {
     // Note: PowerShell and CMD might write to stderr even on success
     let success = match shell_type {
         ShellType::Bash => output.status.success() && stderr.is_empty(),
-        _ => output.status.success()
+        _ => output.status.success(),
     };
 
     Ok(CommandOutput {
         stdout: stdout.trim().to_string(),
         stderr: stderr.trim().to_string(),
-        success
+        success,
     })
 }

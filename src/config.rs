@@ -128,6 +128,7 @@ impl Config {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update(&self, config_path: &PathBuf) -> Result<()> {
         let toml_string = toml::to_string_pretty(&self)?;
         fs::write(config_path, toml_string)?;
@@ -140,7 +141,7 @@ pub fn get_config_path() -> Result<PathBuf> {
     Ok(home.join(".config").join("spren").join("config.toml"))
 }
 
-// Helper function to merge user config with defaults
+#[allow(dead_code)]
 pub fn merge_with_defaults(user_config: Config) -> Config {
     // Implementation would merge any missing fields from default config
     // while preserving user-specified values

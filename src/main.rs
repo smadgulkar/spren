@@ -1,12 +1,13 @@
 use anyhow::Result;
 use colored::*;
 use std::io::{self, Write};
-use std::time::Instant;
-
 mod ai;
 mod config;
 mod executor;
 mod shell;
+mod tools;
+
+use tools::{DevTool, DockerTool, GitTool, KubernetesTool, ToolsConfig};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,9 +23,37 @@ async fn main() -> Result<()> {
     let config = config::Config::load(&config_path)?;
     let shell_type = shell::ShellType::detect();
 
+    // Initialize tools
+    let tools_config = ToolsConfig::detect()?;
+    let docker = DockerTool::new();
+    let kubernetes = KubernetesTool::new();
+    let git = GitTool::new();
+
     println!("{}", "Spren - Your AI Shell Assistant".green().bold());
     println!("Shell Type: {}", format!("{:?}", shell_type).blue());
-    println!("Type 'exit' to quit\n");
+
+    // Display available tools
+    println!("\nAvailable Tools:");
+    if docker.is_available() {
+        println!("Docker: {}", "✓".green());
+        if let Ok(version) = docker.version() {
+            println!("  Version: {}", version);
+        }
+    }
+    if kubernetes.is_available() {
+        println!("Kubernetes: {}", "✓".green());
+        if let Ok(version) = kubernetes.version() {
+            println!("  Version: {}", version);
+        }
+    }
+    if git.is_available() {
+        println!("Git: {}", "✓".green());
+        if let Ok(version) = git.version() {
+            println!("  Version: {}", version);
+        }
+    }
+
+    println!("\nType 'exit' to quit\n");
 
     loop {
         print!("spren> ");
@@ -38,7 +67,7 @@ async fn main() -> Result<()> {
             break;
         }
 
-        match process_query(query, &config).await {
+        match process_query(query, &config, &tools_config).await {
             Ok(_) => continue,
             Err(e) => eprintln!("{}: {}", "Error".red().bold(), e),
         }
@@ -47,99 +76,51 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn process_query(query: &str, config: &config::Config) -> Result<()> {
-    // Get command suggestion from AI
-    let (command, is_dangerous) = ai::get_command_suggestion(query, &config).await?;
+async fn process_query(query: &str, config: &config::Config, tools: &ToolsConfig) -> Result<()> {
+    let response = tools.process_query(query, config).await?;
 
-    println!("\n{}", "Suggested command:".blue().bold());
-    if is_dangerous {
-        println!("{} {}", command, "[DANGEROUS]".red().bold());
-        println!("\n{}", "This command has been identified as potentially dangerous.".yellow());
-        if !config.security.require_confirmation {
-            return Ok(());
-        }
+    // Parse the response for dangerous commands
+    let (command, is_dangerous) = if response.contains("DANGEROUS: true") {
+        let parts: Vec<&str> = response.split('\n').collect();
+        let command = parts
+            .iter()
+            .find(|l| l.starts_with("COMMAND: "))
+            .map(|l| l.strip_prefix("COMMAND: ").unwrap())
+            .unwrap_or(&response);
+        (command.to_string(), true)
     } else {
-        println!("{}", command);
-    }
+        (response, false)
+    };
 
-    if config.security.require_confirmation {
-        print!("\nExecute? [y/N] ");
-        io::stdout().flush()?;
-
-        let mut response = String::new();
-        io::stdin().read_line(&mut response)?;
-
-        if response.trim().to_lowercase() != "y" {
-            return Ok(());
+    // Show and execute the command
+    println!("\n{}", "Suggested command:".blue().bold());
+    println!(
+        "{}{}",
+        command,
+        if is_dangerous {
+            " [DANGEROUS]".red().bold()
+        } else {
+            "".into()
         }
-    }
+    );
 
-    let start_time = Instant::now();
+    // Execute and handle output
     match executor::execute_command(&command).await {
         Ok(output) => {
-            if config.display.show_execution_time {
-                println!("\nExecution time: {:?}", start_time.elapsed());
-            }
-
-            if !output.stdout.is_empty() {
-                println!("\n{}", output.stdout);
-            }
-
             if !output.stderr.is_empty() {
-                if output.success {
-                    // Command succeeded but had stderr output
-                    println!("{}: {}", "Note".yellow().bold(), output.stderr);
-                } else {
-                    // Command failed
-                    println!("{}: {}", "Error".red().bold(), output.stderr);
-
-                    // Get error analysis and suggestion
-                    if let Ok(suggestion) = ai::get_error_suggestion(
-                        &command,
-                        &output.stdout,
-                        &output.stderr,
-                        &config
-                    ).await {
-                        println!("\n{}", "Suggestion:".yellow().bold());
-                        println!("{}", suggestion);
-                    }
-                }
+                let suggestion =
+                    ai::get_error_suggestion(&command, &output.stdout, &output.stderr, config)
+                        .await?;
+                println!("\n{}", "Suggestion:".yellow().bold());
+                println!("{}", suggestion);
+            } else {
+                println!("{}", output.stdout);
             }
         }
         Err(e) => {
-            println!("\n{}: {}", "System Error".red().bold(), e);
+            println!("\n{}: {}", "Error".red().bold(), e);
         }
     }
 
     Ok(())
-}
-#[derive(Debug, serde::Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    html_url: String,
-}
-
-async fn check_for_updates() -> Result<Option<String>> {
-    let current_version = env!("CARGO_PKG_VERSION");
-    let client = reqwest::Client::new();
-
-    let releases: Vec<GithubRelease> = client
-        .get("https://api.github.com/repos/yourusername/spren/releases")
-        .header("User-Agent", "spren")
-        .send()
-        .await?
-        .json()
-        .await?;
-
-    if let Some(latest) = releases.first() {
-        let latest_version = latest.tag_name.trim_start_matches('v');
-        if latest_version != current_version {
-            return Ok(Some(format!(
-                "Update available: {} -> {} ({})",
-                current_version, latest_version, latest.html_url
-            )));
-        }
-    }
-
-    Ok(None)
 }
