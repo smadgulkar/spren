@@ -1,4 +1,4 @@
-// src/main.rs
+//src/main.rs
 use anyhow::Result;
 use colored::*;
 use std::io::{self, Write};
@@ -148,7 +148,8 @@ async fn process_query(query: &str, config: &config::Config, tools: &ToolsConfig
     // Execute and handle output
     match executor::execute_command(&command).await {
         Ok(output) => {
-            if !output.stderr.is_empty() {
+            // Don't show error analysis for successful git operations or when stdout is present
+            if !output.stderr.is_empty() && (!command.starts_with("git") || !output.success) {
                 let suggestion =
                     ai::get_error_suggestion(&command, &output.stdout, &output.stderr, config)
                         .await?;

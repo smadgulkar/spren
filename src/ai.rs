@@ -109,7 +109,7 @@ pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandCh
                 dangerous: false,
                 requires_confirmation: false,
                 dependent_on: None,
-                provides: Some("staged".to_string()),
+                provides: None,  // Remove dependency tracking for simpler flow
                 validate_output: None,
             });
         }
@@ -149,9 +149,9 @@ pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandCh
             description: "Commit changes with descriptive message".to_string(),
             dangerous: false,
             requires_confirmation: true,
-            dependent_on: if !status.is_empty() { Some("staged".to_string()) } else { None },
+            dependent_on: None,  // Remove dependency tracking for simpler flow
             provides: None,
-            validate_output: Some("success".to_string()),
+            validate_output: None,  // Remove validation for simpler flow
         });
         
         return Ok(CommandChain {
