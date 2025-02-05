@@ -83,6 +83,83 @@ struct Message {
 
 pub async fn get_command_chain(query: &str, config: &Config) -> Result<CommandChain> {
     let shell_type = ShellType::detect();
+    
+    // Special handling for git commit operations
+    if query.to_lowercase().contains("commit") && query.to_lowercase().contains("git") {
+        let mut steps = Vec::new();
+        
+        // Get current git status
+        let status_output = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .output()?;
+        
+        let status = String::from_utf8_lossy(&status_output.stdout);
+        
+        // Get diff for context
+        let diff_output = std::process::Command::new("git")
+            .args(["diff"])
+            .output()?;
+        let diff = String::from_utf8_lossy(&diff_output.stdout);
+        
+        // Step 1: Add files if there are unstaged changes
+        if !status.is_empty() {
+            steps.push(CommandStep {
+                command: "git add .".to_string(),
+                description: "Stage all modified files".to_string(),
+                dangerous: false,
+                requires_confirmation: false,
+                dependent_on: None,
+                provides: Some("staged".to_string()),
+                validate_output: None,
+            });
+        }
+        
+        // Generate meaningful commit message based on changes
+        let mut message = String::new();
+        let files: Vec<_> = status.lines().collect();
+        
+        if files.iter().any(|f| f.contains(".rs")) {
+            message.push_str("feat: Update Rust implementation - ");
+            let rs_files: Vec<_> = files.iter()
+                .filter(|f| f.contains(".rs"))
+                .map(|f| &f[3..])
+                .collect();
+            message.push_str(&rs_files.join(", "));
+        } else if files.iter().any(|f| f.contains("test")) {
+            message.push_str("test: Update test suite");
+        } else if files.iter().any(|f| f.contains(".md")) {
+            message.push_str("docs: Update documentation");
+        } else {
+            message.push_str("chore: Update project files");
+        }
+        
+        // Add details about changed files
+        if !files.is_empty() {
+            message.push_str("\n\nChanges:");
+            for file in files {
+                if file.len() > 3 {
+                    message.push_str(&format!("\n- {}", &file[3..]));
+                }
+            }
+        }
+        
+        // Step 2: Commit with generated message
+        steps.push(CommandStep {
+            command: format!("git commit -m \"{}\"", message.trim()),
+            description: "Commit changes with descriptive message".to_string(),
+            dangerous: false,
+            requires_confirmation: true,
+            dependent_on: if !status.is_empty() { Some("staged".to_string()) } else { None },
+            provides: None,
+            validate_output: Some("success".to_string()),
+        });
+        
+        return Ok(CommandChain {
+            steps,
+            context: HashMap::new(),
+        });
+    }
+    
     let prompt = format!(
         r#"Analyze this query and break it down into a sequence of shell commands: '{}'
 
@@ -97,9 +174,6 @@ Requirements:
 4. Include validation rules for critical steps
 5. Consider security implications
 
-For shell-specific commands, use:
-{}
-
 Response Format:
 STEPS: <number_of_steps>
 BEGIN_STEP: 1
@@ -113,17 +187,7 @@ VALIDATE_OUTPUT: <validation rule or NONE>
 END_STEP"#,
         query,
         shell_type.get_shell_name(),
-        if cfg!(windows) {
-            "Windows"
-        } else {
-            "Unix-like"
-        },
-        match shell_type {
-            ShellType::PowerShell =>
-                "- Use PowerShell commands (Get-*, Set-*, etc.)\n- Use proper PowerShell syntax",
-            ShellType::Cmd => "- Use CMD.exe commands\n- Use proper CMD syntax",
-            ShellType::Bash => "- Use Bash commands\n- Use proper Bash syntax",
-        }
+        if cfg!(windows) { "Windows" } else { "Unix-like" }
     );
 
     let response = match config.ai.provider {
@@ -180,11 +244,7 @@ DANGEROUS: true/false
 COMMAND: <command>"#,
             query,
             shell_type.get_shell_name(),
-            if cfg!(windows) {
-                "Windows"
-            } else {
-                "Unix-like"
-            },
+            if cfg!(windows) { "Windows" } else { "Unix-like" },
             tool_specific_prompt
         )
     };
@@ -234,6 +294,7 @@ async fn get_anthropic_command(prompt: &str, config: &Config) -> Result<(String,
 
     parse_ai_response(&response.content[0].text)
 }
+
 
 async fn get_openai_command(query: &str, config: &Config) -> Result<(String, bool)> {
     let api_key = config
