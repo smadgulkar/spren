@@ -148,8 +148,12 @@ async fn process_query(query: &str, config: &config::Config, tools: &ToolsConfig
     // Execute and handle output
     match executor::execute_command(&command).await {
         Ok(output) => {
-            // Don't show error analysis for successful git operations or when stdout is present
-            if !output.stderr.is_empty() && (!command.starts_with("git") || !output.success) {
+            let is_git_success = command.starts_with("git") && 
+                (output.stdout.contains(" changed,") || 
+                 output.stdout.starts_with('[') ||
+                 output.success && !output.stdout.is_empty());
+
+            if !output.stderr.is_empty() && !is_git_success {
                 let suggestion =
                     ai::get_error_suggestion(&command, &output.stdout, &output.stderr, config)
                         .await?;
