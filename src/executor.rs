@@ -32,8 +32,6 @@ pub async fn execute_command(command: &str) -> Result<CommandOutput> {
     // Special handling for different command types
     if command.starts_with("git") {
         return execute_git_command(command).await;
-    } else if command.starts_with("docker") {
-        return execute_docker_command(command).await;
     }
 
     let (shell, args) = shell_type.get_shell_command();
@@ -47,144 +45,31 @@ pub async fn execute_command(command: &str) -> Result<CommandOutput> {
 }
 
 async fn execute_git_command(command: &str) -> Result<CommandOutput> {
-    // Handle git commands with intelligence
-    if command.contains("commit") {
-        return handle_git_commit(command).await;
-    }
-
-    // For other git commands, execute directly
+    // Split the command into parts
+    let parts: Vec<&str> = command.split_whitespace().collect();
     let output = Command::new("git")
-        .args(command.trim_start_matches("git ").split_whitespace())
+        .args(&parts[1..])
         .output()?;
 
-    Ok(output.into())
-}
-
-async fn handle_git_commit(_: &str) -> Result<CommandOutput> {
-    // First, check if there are unstaged changes
-    let status_output = Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()?;
-
-    if !status_output.status.success() {
-        return Ok(status_output.into());
-    }
-
-    let status = String::from_utf8_lossy(&status_output.stdout);
-    if status.is_empty() {
-        return Ok(CommandOutput {
-            stdout: "No changes to commit".to_string(),
-            stderr: String::new(),
-            success: false,
-            variables: None,
-        });
-    }
-
-    // Get detailed diff for changed files
-    let diff_output = Command::new("git")
-        .args(["diff", "--staged"])
-        .output()?;
-    let staged_diff = String::from_utf8_lossy(&diff_output.stdout);
-
-    let unstaged_diff_output = Command::new("git")
-        .args(["diff"])
-        .output()?;
-    let unstaged_diff = String::from_utf8_lossy(&unstaged_diff_output.stdout);
-
-    // Analyze changes to generate appropriate commit message
-    let commit_message = generate_commit_message(&status, &staged_diff, &unstaged_diff)?;
-
-    // Add files if needed
-    if !status.lines().all(|line| line.starts_with(" M") || line.starts_with("M")) {
-        println!("{}", "Adding changed files...".blue());
-        let add_output = Command::new("git")
-            .args(["add", "."])
-            .output()?;
-
-        if !add_output.status.success() {
-            return Ok(add_output.into());
-        }
-    }
-
-    // Execute the commit with generated message
-    println!("{} {}", "Committing with message:".blue(), commit_message);
-    let output = Command::new("git")
-        .args(["commit", "-m", &commit_message])
-        .output()?;
-
-    Ok(output.into())
-}
-
-fn generate_commit_message(status: &str, _: &str, _: &str) -> Result<String> {
-    let mut changes = Vec::new();
-    
-    // Analyze file changes
-    for line in status.lines() {
-        let status_code = &line[0..2];
-        let file = line[3..].to_string();
-        
-        match status_code.trim() {
-            "M" => changes.push(format!("Modified {}", file)),
-            "A" => changes.push(format!("Added {}", file)),
-            "D" => changes.push(format!("Deleted {}", file)),
-            "R" => changes.push(format!("Renamed {}", file)),
-            _ => changes.push(format!("Changed {}", file)),
-        }
-    }
-
-    // Check for specific file types and patterns
-    let has_rust = status.contains(".rs");
-    let has_tests = status.contains("test") || status.contains("spec");
-    let has_docs = status.contains(".md") || status.contains("doc");
-    let is_dependency_change = status.contains("Cargo.toml") || status.contains("package.json");
-
-    // Generate appropriate prefix
-    let prefix = if has_tests {
-        "test:"
-    } else if has_docs {
-        "docs:"
-    } else if is_dependency_change {
-        "deps:"
-    } else if has_rust {
-        "feat:"
-    } else {
-        "chore:"
-    };
-
-    // Generate message body
-    let mut message = if changes.len() == 1 {
-        format!("{} {}", prefix, changes[0])
-    } else {
-        let summary = if has_rust {
-            "Update Rust implementations".to_string()
-        } else if has_tests {
-            "Update test suite".to_string()
-        } else if has_docs {
-            "Update documentation".to_string()
-        } else if is_dependency_change {
-            "Update dependencies".to_string()
+    // For successful git commands, combine stdout and stderr in a meaningful way
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = if stdout.trim().is_empty() {
+            stderr.into_owned()
         } else {
-            "Multiple changes".to_string()
+            stdout.into_owned()
         };
-
-        format!("{} {}", prefix, summary)
-    };
-
-    // Add details if there are multiple changes
-    if changes.len() > 1 {
-        message.push_str("\n\n- ");
-        message.push_str(&changes.join("\n- "));
+        
+        Ok(CommandOutput {
+            stdout: combined,
+            stderr: String::new(),
+            success: true,
+            variables: None,
+        })
+    } else {
+        Ok(output.into())
     }
-
-    Ok(message)
-}
-
-async fn execute_docker_command(command: &str) -> Result<CommandOutput> {
-    let output = Command::new("docker")
-        .args(command.trim_start_matches("docker ").split_whitespace())
-        .output()?;
-
-    Ok(output.into())
 }
 
 pub async fn execute_command_chain(chain: &mut CommandChain) -> Result<Vec<CommandOutput>> {
@@ -236,13 +121,7 @@ pub async fn execute_command_chain(chain: &mut CommandChain) -> Result<Vec<Comma
 
         let result = execute_command(&command).await?;
 
-        // Extract and store variables if specified
-        if let Some(var_name) = &step.provides {
-            let value = extract_output_value(&result.stdout)?;
-            chain.context.insert(var_name.clone(), value);
-        }
-
-        // Handle command output
+        // Handle output appropriately based on success/failure
         if !result.success {
             had_error = true;
             println!("{} Step {} failed", "✗".red(), step_index + 1);
@@ -269,7 +148,12 @@ pub async fn execute_command_chain(chain: &mut CommandChain) -> Result<Vec<Comma
             );
             
             if !result.stdout.trim().is_empty() {
-                println!("\n{}", result.stdout.trim());
+                // For git commands that succeeded, just show the output
+                if command.starts_with("git") {
+                    println!("{}", result.stdout.trim());
+                } else {
+                    println!("\n{}", result.stdout.trim());
+                }
             }
         }
 
