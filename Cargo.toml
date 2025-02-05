@@ -24,6 +24,7 @@ toml = "0.8.19"
 dirs = "5.0.1"
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
+regex = "1.10.0"
 
 [profile.release]
 opt-level = 3
