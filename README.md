@@ -1,7 +1,7 @@
 # 🤖 Spren - AI-Powered Terminal Assistant
 
 [![GitHub release](https://img.shields.io/github/v/release/smadgulkar/spren)](https://github.com/smadgulkar/spren/releases)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-blue)]()
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0) [![OS](https://img.shields.io/badge/OS-Windows%20%7C%20macOS%20%7C%20Linux-blue)]()
 
 A smart AI shell assistant built with Rust 🦀 that transforms natural language into accurate shell commands (Bash, PowerShell, CMD) for Linux, macOS, and Windows. Boost your command-line productivity, whether you're a beginner or power user.
 
